@@ -1,51 +1,37 @@
 # Cato EventsFeed to an existing Cribl Stream Docker deployment
 
 > [!CAUTION]
-> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION CODE.** This repository is not supported by Damon Cassell, the repository owner, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. It is not an official or approved integration. There is no support commitment, no maintenance commitment, no warranty, and no license grant from the author. Do not use it in production. Read [`DISCLAIMER.md`](DISCLAIMER.md).
+> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION CODE.** This repository is not supported by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. It is not an official integration. There is no support commitment, maintenance commitment, warranty, or license grant. Do not use it in production. Read [`DISCLAIMER.md`](DISCLAIMER.md).
 
-This repository contains experimental demonstration code showing one possible way to retrieve events from the **Cato Networks EventsFeed API** and forward them to an **existing Cribl Stream deployment running in Docker**.
+This repository demonstrates one possible way to retrieve events from the Cato Networks EventsFeed API and forward them to an existing Cribl Stream deployment running in Docker.
 
-Its presence on GitHub does not make it production-ready, supported, endorsed, licensed, safe, complete, or suitable for any purpose. Apparently repositories do not arrive with warning sirens, so this paragraph must perform the task.
+## Customer installation
 
-## Interactive installer
-
-The repository includes an interactive [`install.sh`](install.sh) wrapper.
-
-Current defaults:
-
-| Setting | Default |
-|---|---|
-| Installation directory | `/opt/cribbler` |
-| Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
-| Cribl connection method | Auto-detected published host TCP port |
-| Cribl Syslog TCP port | `9514` |
-| Cribl TLS | Disabled |
-| Poll interval | 30 seconds |
-
-Recommended pinned installation:
+Run this command from an interactive Linux terminal on the Docker host:
 
 ```bash
-INSTALL_REF=<reviewed-commit-sha>
-
-curl -fsSLo /tmp/catocribbler-install.sh \
-  "https://raw.githubusercontent.com/dzcassell/catocribbler/${INSTALL_REF}/install.sh"
-
-less /tmp/catocribbler-install.sh
-
-sudo env \
-  CATOCRIBBLER_REF="${INSTALL_REF}" \
-  bash /tmp/catocribbler-install.sh
+curl -fsSL https://raw.githubusercontent.com/dzcassell/catocribbler/main/install.sh | sudo bash
 ```
 
-The installer reads answers from `/dev/tty`, so prompts remain interactive when Bash receives the script through a pipe. It builds the image, runs independent Cato and Cribl preflights, can send one synthetic event, and leaves continuous polling stopped unless the evaluator explicitly types `START` after the backlog warning.
+That is the complete launch command. The installer handles the remaining questions interactively.
 
-See [`docs/INSTALLER.md`](docs/INSTALLER.md) and [`docs/INSTALL.md`](docs/INSTALL.md).
+The installer will:
 
-## Automatic Cribl listener detection
+- Default to `/opt/cribbler` and create the directory when needed.
+- Default to `https://api.catonetworks.com/api/v1/graphql`.
+- Ask for the numeric Cato account ID.
+- Detect a running Cribl container publishing `9514/tcp`.
+- Detect the Docker host address and suggest the working Cribl endpoint.
+- Ask for the Cato API key without displaying it.
+- Build the poller container.
+- Test Cato authentication.
+- Test the connection to Cribl.
+- Offer to send one synthetic test event.
+- Require the operator to type `START` before continuous polling begins.
 
-Before asking for any Cribl host address, the installer checks running `cribl*` containers for a published `9514/tcp` listener and detects the Docker host's primary IPv4 address.
+For a normal installation, most prompts can be accepted by pressing Enter.
 
-A typical result is:
+## Example Cribl detection
 
 ```text
 The installer found a running Cribl container with a published Syslog listener:
@@ -57,125 +43,100 @@ The installer found a running Cribl container with a published Syslog listener:
 Use this detected Cribl listener [Y/n]:
 ```
 
-For a normal installation, the evaluator presses Enter. No IP address, port, Docker network name, or container alias must be discovered manually.
+Press Enter when the detected container and address are correct. The installer asks for manual networking information only when automatic detection fails or the detected listener is rejected.
 
-Alternative published-host or shared-Docker-network prompts appear only when detection fails or the evaluator rejects the detected listener.
+## Information to have ready
 
-## Project assumption
+Before starting, collect:
 
-This project does **not** install, upgrade, replace, or manage Cribl Stream.
+### Cato
 
-It assumes an evaluator already has:
+- Numeric Cato account ID
+- Fresh Service API Key with read-only permissions
+- Approval to use EventsFeed for the demonstration
 
-- A non-production Cribl Stream single-instance or distributed Docker deployment.
-- A Cribl Worker or single-instance container that can receive test syslog data.
-- Administrative access to create or enable a Cribl Syslog Source, Route, Pipeline, and test Destination.
-- Docker access on the host running Cribl or on another isolated host that can reach it.
-- Permission to perform a non-production demonstration using synthetic or specifically approved test data.
+### Cribl
 
-The only new runtime component introduced is:
+- A running non-production Cribl Worker or single-instance container
+- An enabled TCP Syslog Source, normally on port `9514`
+- A test Route, Pipeline, and isolated Destination
 
-```text
-cato-events-poller
-```
+## Defaults
+
+| Setting | Default |
+|---|---|
+| Installation directory | `/opt/cribbler` |
+| Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
+| Cribl connection | Automatically detected published TCP listener |
+| Cribl Syslog port | `9514` |
+| Cribl TLS | Disabled |
+| Poll interval | 30 seconds |
 
 ## What the poller does
 
-The container:
+The `cato-events-poller` container:
 
-1. Reads a Cato API key from a protected Docker secret file.
-2. Authenticates to the Cato GraphQL API using `x-api-key`.
-3. Calls `eventsFeed` for one numeric Cato account ID.
-4. Uses Cato's opaque marker to continue from the last successfully delivered page.
-5. Promotes Cato `fieldsMap` values into normalized snake-case JSON fields.
-6. Wraps each JSON event in RFC 5424 syslog with `appname=cato-events`.
-7. Sends records to an existing Cribl Syslog Source over TCP or TLS.
-8. Advances the local marker only after the complete page has been written to the Cribl socket.
-9. Immediately drains full 3,000-record pages before returning to the configured polling interval.
+1. Reads the Cato API key from a protected secret file.
+2. Calls the Cato EventsFeed GraphQL query.
+3. Uses Cato's opaque marker to continue from the last successfully delivered page.
+4. Normalizes Cato `fieldsMap` values into JSON fields.
+5. Wraps each event in RFC 5424 syslog with `appname=cato-events`.
+6. Sends records to the existing Cribl Syslog Source over TCP or TLS.
+7. Advances the marker only after the complete page has been written to the Cribl socket.
 
-## Cribl connection methods
+## First-run warning
 
-### Auto-detected published host TCP port, recommended default
+A new installation has no EventsFeed marker. Starting continuous polling can retrieve all events currently retained by EventsFeed in consecutive pages of up to 3,000 records.
 
-When a running Cribl container publishes `9514/tcp`, the installer resolves the mapping automatically and asks the evaluator to confirm it.
+The installer therefore performs authentication and connectivity tests first and will not start continuous polling until the operator types:
 
-This is the preferred model because it:
+```text
+START
+```
 
-- Is simpler to explain and troubleshoot.
-- Does not attach the poller to Cribl's internal Docker network.
-- Does not depend on local Docker network names and aliases.
-- Is more portable between customer environments.
+## After installation
 
-### Shared external Docker network, advanced fallback
+```bash
+cd /opt/cribbler/poller
 
-Use this only when the Syslog TCP port is not published or direct container-to-container connectivity is specifically required.
+docker compose ps
+docker compose logs -f cato-events-poller
+docker compose stop cato-events-poller
+docker compose up -d
+docker compose down
+```
 
-The poller joins an existing non-production Cribl Docker network and connects using the Cribl container, service, or network-alias name.
+The API key is stored in:
 
-This method is less portable and gives the poller access to other services exposed on that network.
+```text
+/opt/cribbler/poller/secrets/cato_api_key
+```
 
-## Cato API-key choice
+The installer records non-secret installation details, including the exact installed Git commit, in:
 
-Cato provides:
+```text
+/opt/cribbler/INSTALLATION_INFO.txt
+```
 
-- **Admin API Key**, tied to an individual administrator.
-- **Service API Key**, tied to a service principal.
-
-For a shared demonstration, a dedicated Service API Key with Viewer permissions, narrow scope, source-IP restrictions, short expiration, and prompt revocation is preferable.
-
-Neither choice makes this code appropriate for production.
+The customer does not need to select or enter a commit identifier.
 
 ## Important limitations
 
 - One poller container handles one Cato account ID.
-- The API key is not baked into the image and is not stored in `.env`.
-- The marker is persisted in `poller/state/marker.txt`.
-- An empty marker can retrieve the beginning of retained EventsFeed data and create a large replay.
-- A page is acknowledged locally only after every event has been written to Cribl's TCP socket.
+- An empty marker can create a large replay.
 - `Fetched=N Sent=N` confirms socket writes, not downstream Cribl persistence.
-- `Fetched=0 Sent=0` is a successful poll with no new events.
-- The poller exposes no inbound network port.
-- The code has not been tested for production scale, failure recovery, long-term compatibility, security, privacy, regulatory compliance, or operational readiness.
+- The code has not been tested for production scale, long-term compatibility, regulatory compliance, or operational readiness.
 - It can lose, duplicate, delay, reorder, expose, or replay events.
 
-## Security characteristics are not a certification
+## Documentation
 
-The supplied Compose deployment:
-
-- Runs as non-root UID `10001`.
-- Uses a read-only container root filesystem.
-- Uses an in-memory `/tmp` filesystem.
-- Applies `no-new-privileges`.
-- Reads the Cato API key and optional Cribl CA chain as Docker secrets.
-- Provides write access only to persistent marker state.
-
-These are demonstration safeguards, not proof of security, correctness, suitability, or production readiness.
-
-## Repository contents
-
-- [`DISCLAIMER.md`](DISCLAIMER.md): unsupported-code, no-license, no-warranty, and liability notice.
-- [`install.sh`](install.sh): guided interactive installer.
-- [`poller/poller.py`](poller/poller.py): EventsFeed polling, normalization, marker handling, and syslog delivery.
-- [`poller/Dockerfile`](poller/Dockerfile): Python image running as UID `10001`.
-- [`poller/compose.yaml`](poller/compose.yaml): standalone poller deployment.
-- [`poller/.env.example`](poller/.env.example): configuration template.
-- [`cribl/pipelines/cato_normalize/conf.yml`](cribl/pipelines/cato_normalize/conf.yml): demonstration normalization Pipeline.
-- [`cribl/routes/cato_events_route.yml`](cribl/routes/cato_events_route.yml): demonstration Route.
-- [`docs/INSTALLER.md`](docs/INSTALLER.md): installer behavior and prompts.
-- [`docs/INSTALL.md`](docs/INSTALL.md): fresh-install sequence.
-- [`docs/CRIBL.md`](docs/CRIBL.md): Cribl integration.
-- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md): diagnostics.
-- [`docs/OPERATIONS.md`](docs/OPERATIONS.md): lifecycle and cleanup.
-- [`SECURITY.md`](SECURITY.md): security cautions.
-
-## First-run danger
-
-A new installation has no marker. Starting continuous polling can retrieve all events currently retained by EventsFeed in consecutive pages of up to 3,000 records. This can create duplicates, unexpected volume, licensing impact, storage consumption, or downstream cost.
-
-Do not point the demonstration at production data, production Cribl, or a production Destination.
+- [`docs/INSTALLER.md`](docs/INSTALLER.md): installer prompts and behavior
+- [`docs/INSTALL.md`](docs/INSTALL.md): fresh customer installation sequence
+- [`docs/CRIBL.md`](docs/CRIBL.md): Cribl configuration guidance
+- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md): diagnostics
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md): lifecycle and cleanup
+- [`SECURITY.md`](SECURITY.md): security cautions
 
 ## No support, no license, no warranty
 
-This repository is not supported by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, customer, or other party.
-
-It intentionally contains no `LICENSE` file and grants no license from the author. It is provided “AS IS” and “AS AVAILABLE,” with no warranties and no liability to the maximum extent permitted by applicable law.
+This repository is provided “AS IS” and “AS AVAILABLE.” It contains no license grant from the author and creates no support or maintenance obligation for any person or organization.
