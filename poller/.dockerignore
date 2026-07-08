@@ -1,0 +1,14 @@
+.env
+.env.*
+secrets/
+state/
+compose.override.yaml
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
