@@ -83,7 +83,7 @@ cp .env.example .env
 mkdir -p secrets state
 
 # Edit .env with the tenant's API URL, account ID, and Cribl listener.
-editor .env
+nano .env
 
 # Enter the API key without placing it in shell history.
 umask 077
@@ -96,10 +96,11 @@ printf '\n'
 # Non-TLS lab deployments still need the declared file to exist.
 : > secrets/cribl_ca.pem
 
-# The container runs as UID 10001 and must be able to update the marker.
-chown -R 10001 state
-chmod 0700 state
+# The container runs as UID 10001. It must be able to read the local
+# secret source files and create/replace the persistent marker.
+chown 10001 secrets/cato_api_key secrets/cribl_ca.pem state
 chmod 0400 secrets/cato_api_key secrets/cribl_ca.pem
+chmod 0700 state
 
 # Validate, build, start, and follow the logs.
 docker compose config
