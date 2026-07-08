@@ -1,0 +1,46 @@
+output: default
+groups: {}
+asyncFuncTimeout: 1000
+functions:
+  - id: code
+    filter: "true"
+    disabled: false
+    description: "Parse Cato JSON from the syslog message field and promote it to top-level fields"
+    conf:
+      maxNumOfIterations: 5000
+      code: |-
+        try {
+          const originalMessage = __e.message;
+
+          const parsed =
+            typeof originalMessage === 'string'
+              ? JSON.parse(originalMessage)
+              : originalMessage;
+
+          if (
+            !parsed ||
+            typeof parsed !== 'object' ||
+            Array.isArray(parsed)
+          ) {
+            throw new Error('Cato syslog message is not a JSON object');
+          }
+
+          Object.assign(__e, parsed);
+          __e.cribl_pipeline = 'cato_normalize';
+          __e.vendor = parsed.vendor || 'cato';
+          __e.product = parsed.product || 'cato_sase';
+
+          const eventTime = Number(parsed.time || parsed.cato_time);
+          if (Number.isFinite(eventTime) && eventTime > 0) {
+            __e._time =
+              eventTime > 1000000000000
+                ? eventTime / 1000
+                : eventTime;
+          }
+
+          __e._raw = JSON.stringify(parsed);
+          delete __e.message;
+        } catch (err) {
+          __e.cato_parse_error = String(err);
+          __e.cribl_pipeline = 'cato_normalize_parse_failed';
+        }
