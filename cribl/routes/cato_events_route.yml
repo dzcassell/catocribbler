@@ -1,0 +1,12 @@
+# Merge this route into the target Worker Group route.yml and replace
+# cato_file_output with the customer's validation or production Destination.
+- id: cato_events_route
+  name: cato_events_route
+  final: true
+  disabled: false
+  pipeline: cato_normalize
+  description: "Route Cato EventsFeed syslog records through normalization"
+  enableOutputExpression: false
+  filter: "__inputId.startsWith('syslog:in_syslog') && appname === 'cato-events'"
+  clones: []
+  output: cato_file_output
