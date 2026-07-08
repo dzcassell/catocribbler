@@ -1,5 +1,7 @@
-# Merge this route into the target Worker Group route.yml and replace
+# Merge this route into the existing Cribl Worker Group route.yml and replace
 # cato_file_output with the customer's validation or production Destination.
+# The filter intentionally accepts any Cribl Syslog Source ID and then narrows
+# on the RFC 5424 appname emitted by this poller.
 - id: cato_events_route
   name: cato_events_route
   final: true
@@ -7,6 +9,6 @@
   pipeline: cato_normalize
   description: "Route Cato EventsFeed syslog records through normalization"
   enableOutputExpression: false
-  filter: "__inputId.startsWith('syslog:in_syslog') && appname === 'cato-events'"
+  filter: "__inputId.startsWith('syslog:') && appname === 'cato-events'"
   clones: []
   output: cato_file_output
