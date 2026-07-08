@@ -5,9 +5,7 @@
 
 This guide assumes Cribl Stream already runs in Docker. The repository and installer add only the experimental `cato-events-poller` container and demonstration Cribl configuration.
 
-The default poller installation directory is `/opt/cribbler`, but the interactive installer allows another absolute path.
-
-Set the actual path when running poller commands:
+The default installation directory is `/opt/cribbler`, but the installer allows another absolute path.
 
 ```bash
 INSTALL_DIR=${INSTALL_DIR:-/opt/cribbler}
@@ -44,9 +42,9 @@ docker port "${CRIBL_CONTAINER}"
 
 ## 2. Choose the poller connection model
 
-### Published host TCP port
+### Published host TCP port, recommended default
 
-Use the Docker host's LAN/test-network IP or DNS name when Cribl publishes the Syslog Source port:
+Use this when the Cribl container publishes the Syslog Source port to the Docker host, for example:
 
 ```text
 0.0.0.0:9514->9514/tcp
@@ -56,15 +54,22 @@ Installer values:
 
 ```text
 Connection method: 1
-Cribl host: <docker-host-ip-or-dns-name>
+Cribl host: <docker-host-lan-ip-or-dns-name>
 Cribl port: 9514
 ```
 
-Do not use `localhost` or `127.0.0.1`; those addresses refer to the poller container itself.
+This is the recommended default because it:
 
-### Shared external Docker network
+- Is simpler to explain and troubleshoot.
+- Does not attach the poller to Cribl's internal Docker network.
+- Does not depend on local Docker network names and aliases.
+- Works when the poller runs on the same host or another reachable test host.
 
-Use this when the poller should connect directly to the Cribl container over an existing isolated test network.
+Do not use `localhost` or `127.0.0.1`; inside the poller container those addresses refer to the poller itself.
+
+### Shared external Docker network, advanced fallback
+
+Use this only when the Syslog TCP port is not published or direct container-to-container connectivity is specifically required.
 
 Installer values:
 
@@ -81,11 +86,15 @@ The installer verifies the network exists and writes:
 <install-directory>/poller/compose.override.yaml
 ```
 
-Attaching the poller to an external network increases its reach. Do not attach it to production, management, database, or unrelated application networks.
+This option:
+
+- Depends on customer-specific Docker network names and aliases.
+- Gives the poller access to other services exposed on that network.
+- Is less portable between customer environments.
+
+**Recommendation:** choose option 1 unless the Cribl listener is not published or the deployment specifically requires option 2.
 
 ## 3. Reuse or create a non-production Syslog Source
-
-A Cribl deployment may already include a Syslog Source on port `9514`.
 
 Confirm:
 
@@ -105,11 +114,11 @@ The poller emits RFC 5424 records with:
 appname=cato-events
 ```
 
-The supplied Route accepts any Syslog Source ID and then narrows on this application name.
+The supplied Route accepts any Syslog Source ID and narrows on this application name.
 
 ## 4. Confirm Docker exposes the listener
 
-Published-port model:
+For the recommended published-port model:
 
 ```bash
 docker port "${CRIBL_CONTAINER}" 9514/tcp
@@ -121,7 +130,7 @@ If the Source is enabled inside Cribl but the TCP port is not published, either:
 - Add an approved test-only port mapping, or
 - Use the shared external Docker network model.
 
-Do not launch a replacement Cribl stack or expose Cribl management ports for the demonstration.
+Do not launch a replacement Cribl stack or expose Cribl management ports for this demonstration.
 
 ## 5. TLS settings
 
@@ -166,8 +175,6 @@ The demonstration Pipeline attempts to:
 7. Write normalized JSON to `_raw`.
 8. Remove the original `message` field.
 9. Set `cato_parse_error` if parsing fails.
-
-This has not been validated against every Cato event type, schema variation, Cribl release, malformed record, or downstream requirement.
 
 ## 7. Add the Route
 
@@ -349,8 +356,6 @@ cato_parse_error
 cribl_pipeline=cato_normalize_parse_failed
 ```
 
-Confirm the syslog `message` field contains one complete JSON object.
-
 ### Pipeline succeeds but Destination receives nothing
 
 Check:
@@ -382,4 +387,4 @@ Then revoke the Cato key, remove the demonstration service principal when approp
 
 ## No support, license, or warranty
 
-No support is provided by Damon Cassell, Cato Networks, Cribl, contributors, employers, vendors, or any other party. The repository contains no license grant from the author. All material is provided “AS IS” and “AS AVAILABLE.” Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
+No support is provided by Damon Cassell, Cato Networks, Cribl, contributors, employers, vendors, or any other party. All material is provided “AS IS” and “AS AVAILABLE.” Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
