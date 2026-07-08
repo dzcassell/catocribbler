@@ -3,89 +3,89 @@
 > [!CAUTION]
 > **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This material is not supported, approved, endorsed, maintained, or warranted by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. There is no license grant. Do not apply these changes to a production Cribl environment. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 
-This guide does not deploy Cribl Stream.
+This guide assumes Cribl Stream already runs in Docker. The repository and installer add only the experimental `cato-events-poller` container and demonstration Cribl configuration.
 
-It assumes an evaluator already has Cribl Stream running in Docker and is adding the experimental Cato poller to an isolated, disposable, non-production Cribl environment.
+The default poller installation directory is `/opt/cribbler`, but the interactive installer allows another absolute path.
 
-The configuration examples in this repository have not been reviewed or certified by Cribl. They can misroute, duplicate, drop, expose, delay, or corrupt events and can affect licensing, queues, storage, downstream systems, and availability.
+Set the actual path when running poller commands:
 
-## 1. Identify the non-production Cribl data-processing container
+```bash
+INSTALL_DIR=${INSTALL_DIR:-/opt/cribbler}
+POLLER_DIR="${INSTALL_DIR}/poller"
+```
 
-List containers:
+## 1. Identify the Cribl data-processing container
 
 ```bash
 docker ps \
+  --filter 'name=cribl' \
   --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-Choose the correct test target:
+Choose:
 
-- Single-instance Cribl: the non-production single Cribl container.
-- Distributed Cribl: a test Worker container, Worker load balancer, or VIP for the test Worker Group.
-- Do not use the Leader management port as the syslog destination unless that node is intentionally processing test data.
+- The non-production single-instance Cribl container, or
+- A non-production Worker, Worker load balancer, or VIP for the intended test Worker Group.
 
-Inspect the target:
+Do not use the Leader management port unless that node intentionally processes test data.
+
+Inspect the selected container:
 
 ```bash
 CRIBL_CONTAINER=cribl-worker
 
-docker inspect "$CRIBL_CONTAINER" \
+docker inspect "${CRIBL_CONTAINER}" \
   --format 'Name={{.Name}}
 Networks={{json .NetworkSettings.Networks}}
 Ports={{json .NetworkSettings.Ports}}'
 
-docker port "$CRIBL_CONTAINER"
+docker port "${CRIBL_CONTAINER}"
 ```
 
-## 2. Decide how the poller connects
+## 2. Choose the poller connection model
 
-### Published test-host port
+### Published host TCP port
 
-If the existing test Cribl container publishes TCP 9514, use the Docker host's test-network IP or DNS name:
-
-```dotenv
-CRIBL_SYSLOG_HOST=192.0.2.25
-CRIBL_SYSLOG_PORT=9514
-```
-
-Typical mapping:
+Use the Docker host's LAN/test-network IP or DNS name when Cribl publishes the Syslog Source port:
 
 ```text
 0.0.0.0:9514->9514/tcp
 ```
 
-Do not configure `localhost` or `127.0.0.1`; inside the poller container those point to the poller itself.
+Installer values:
+
+```text
+Connection method: 1
+Cribl host: <docker-host-ip-or-dns-name>
+Cribl port: 9514
+```
+
+Do not use `localhost` or `127.0.0.1`; those addresses refer to the poller container itself.
 
 ### Shared external Docker network
 
-Attach the poller to the isolated Cribl test network with `poller/compose.override.yaml`:
+Use this when the poller should connect directly to the Cribl container over an existing isolated test network.
 
-```yaml
-services:
-  cato-events-poller:
-    networks:
-      - cribl_existing
+Installer values:
 
-networks:
-  cribl_existing:
-    external: true
-    name: <actual-existing-cribl-test-network-name>
+```text
+Connection method: 2
+Docker network: <existing-cribl-test-network>
+Cribl host: <container-service-or-network-alias>
+Cribl port: 9514
 ```
 
-Then use the Cribl container or service name:
+The installer verifies the network exists and writes:
 
-```dotenv
-CRIBL_SYSLOG_HOST=cribl-worker
-CRIBL_SYSLOG_PORT=9514
+```text
+<install-directory>/poller/compose.override.yaml
 ```
 
-Attaching the demonstration container to an existing network increases its reach. Review the network membership and do not attach it to production, management, database, or unrelated application networks.
+Attaching the poller to an external network increases its reach. Do not attach it to production, management, database, or unrelated application networks.
 
-See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#3-choose-the-docker-connectivity-model) for discovery and validation commands.
+## 3. Reuse or create a non-production Syslog Source
 
-## 3. Reuse or enable a non-production Syslog Source
-
-A Cribl deployment may include a preconfigured Syslog Source on port `9514`. Reuse, clone, or create a Source only in the authorized test environment.
+A Cribl deployment may already include a Syslog Source on port `9514`.
 
 Confirm:
 
@@ -97,73 +97,59 @@ Confirm:
 | TCP port | `9514` or another approved test port |
 | Enabled | Yes |
 | Configuration state | Saved, committed, and deployed |
-| Data scope | Synthetic or specifically approved test data only |
+| Data scope | Synthetic or specifically approved test data |
 
-The poller sends RFC 5424 records.
+The poller emits RFC 5424 records with:
 
-The Source ID can be `in_syslog_default`, `in_syslog`, or another value. The demonstration Route accepts any Syslog Source ID and identifies the poller using:
-
-```javascript
-appname === 'cato-events'
+```text
+appname=cato-events
 ```
+
+The supplied Route accepts any Syslog Source ID and then narrows on this application name.
 
 ## 4. Confirm Docker exposes the listener
 
-For the host-published-port model:
+Published-port model:
 
 ```bash
-docker port "$CRIBL_CONTAINER" 9514/tcp
+docker port "${CRIBL_CONTAINER}" 9514/tcp
 ss -lnt | grep ':9514 '
 ```
 
-If the Source is enabled inside Cribl but Docker does not publish the port, either:
+If the Source is enabled inside Cribl but the TCP port is not published, either:
 
-- Add an approved test-only port mapping to the existing non-production Cribl configuration, or
-- Use the shared test-network model.
+- Add an approved test-only port mapping, or
+- Use the shared external Docker network model.
 
-Do not launch a replacement Cribl container, alter production port mappings, or expose management ports for this demonstration.
+Do not launch a replacement Cribl stack or expose Cribl management ports for the demonstration.
 
-## 5. Configure TLS for the test when required
+## 5. TLS settings
 
-TLS is strongly preferred even in a lab when real event data might traverse the connection. TLS does not make this demonstration production-ready.
+When TLS is enabled, the installer asks for:
 
-The Cribl test Source must have TLS enabled on the selected TCP port.
-
-The poller needs:
-
-```dotenv
-CRIBL_SYSLOG_TLS=true
-CRIBL_SYSLOG_HOST=cribl-worker.example.com
-CRIBL_SYSLOG_SERVER_NAME=cribl-worker.example.com
-CRIBL_SYSLOG_CA_FILE=/run/secrets/cribl_ca.pem
-```
+- The Cribl certificate server name
+- A PEM CA chain file that validates the server certificate
 
 The certificate should:
 
-- Contain the configured server name in its SAN.
-- Be within its validity period.
-- Include required intermediates.
-- Chain to the CA in `poller/secrets/cribl_ca.pem`.
+- Contain the configured server name in its SAN
+- Be within its validity period
+- Include required intermediates
+- Chain to the supplied CA file
 
-The demonstration poller validates the server certificate. It does not present a client certificate. Do not enable mandatory mutual TLS unless the code is independently modified, reviewed, and tested.
+The poller validates the Cribl server certificate. It does not present a client certificate, so mandatory mutual TLS is not supported by the demonstration code.
 
-For an isolated non-TLS lab Source:
+Plain TCP exposes event contents and should be used only on a deliberately isolated test network.
 
-```dotenv
-CRIBL_SYSLOG_TLS=false
-```
+## 6. Add the normalization Pipeline
 
-Plain TCP can expose event contents and should never be used across an untrusted network.
-
-## 6. Add the demonstration normalization Pipeline
-
-Use:
+Repository file:
 
 ```text
 cribl/pipelines/cato_normalize/conf.yml
 ```
 
-Create or import a test Pipeline with ID:
+Create or import a Pipeline with ID:
 
 ```text
 cato_normalize
@@ -172,103 +158,73 @@ cato_normalize
 The demonstration Pipeline attempts to:
 
 1. Parse JSON from the syslog `message` field.
-2. Verify that the payload is an object.
-3. Promote JSON properties to top-level Cribl fields.
+2. Confirm the payload is an object.
+3. Promote JSON properties to top-level fields.
 4. Add `cribl_pipeline=cato_normalize`.
 5. Add `vendor=cato` and `product=cato_sase` when absent.
-6. Convert a numeric Cato `time` value to Cribl `_time` when possible.
+6. Convert numeric Cato time to Cribl `_time` when possible.
 7. Write normalized JSON to `_raw`.
 8. Remove the original `message` field.
 9. Set `cato_parse_error` if parsing fails.
 
-This code has not been validated against every Cato event type, schema variation, Cribl release, malformed record, or downstream requirement.
+This has not been validated against every Cato event type, schema variation, Cribl release, malformed record, or downstream requirement.
 
-Expected pre-Pipeline fields may resemble:
+## 7. Add the Route
 
-```text
-appname = cato-events
-host = cato-events-poller
-message = {"time":...,"event_type":...,"vendor":"cato",...}
-```
-
-Expected post-Pipeline fields may resemble:
-
-```json
-{
-  "event_type": "Security",
-  "event_sub_type": "Anti Malware",
-  "account_id": "12345",
-  "vendor": "cato",
-  "product": "cato_sase",
-  "cribl_pipeline": "cato_normalize"
-}
-```
-
-## 7. Add the demonstration Route
-
-Use:
+Repository file:
 
 ```text
 cribl/routes/cato_events_route.yml
 ```
 
-The Route filter is:
+Route filter:
 
 ```javascript
 __inputId.startsWith('syslog:') && appname === 'cato-events'
 ```
 
-Suggested test settings:
+Suggested settings:
 
 | Setting | Demonstration value |
 |---|---|
 | Route ID | `cato_events_route` |
-| Filter | `__inputId.startsWith('syslog:') && appname === 'cato-events'` |
 | Pipeline | `cato_normalize` |
 | Output | Isolated test Destination |
 | Final | Yes |
 | Enabled | Yes |
 
-Replace the example output ID:
+Replace the example output ID `cato_file_output` with the actual isolated test Destination when necessary.
 
-```text
-cato_file_output
-```
+Place the Route before broad final routes that might consume the event first.
 
-with an isolated test Destination.
-
-Place the Route before broad catch-all test routes that might consume the event first. Do not insert it into a production route table.
-
-## 8. Use an isolated test Destination
-
-A temporary filesystem or other controlled test Destination can demonstrate Source, Route, Pipeline, and output behavior.
-
-Confirm the Destination:
-
-- Is explicitly approved for the demonstration.
-- Is isolated from production analytics, alerting, billing, and automation.
-- Is enabled and healthy.
-- Has enough capacity for a possible backlog.
-- Does not expose test events to unauthorized users or systems.
-
-## 9. Commit and deploy only to the test Worker Group
+## 8. Commit and deploy only to the test Worker Group
 
 In a distributed test deployment:
 
 1. Save the Source, Pipeline, Route, and Destination changes.
-2. Review the diff.
+2. Review the configuration diff.
 3. Commit the test configuration.
 4. Deploy only to the intended test Worker Group.
-5. Confirm the Worker reports the new configuration as active.
+5. Confirm the Worker reports the configuration as active.
 
-A configuration visible in the UI but not deployed is not active. A configuration deployed to the wrong Worker Group can affect unrelated traffic, which is why change review exists despite humanity's repeated attempts to skip it.
+A configuration visible in the UI but not deployed is not active.
 
-## 10. Test connectivity before starting polling
+## 9. Test with the installer
 
-From the poller directory:
+The interactive installer automatically:
+
+1. Builds the poller image.
+2. Runs the Cato EventsFeed preflight without sending records.
+3. Opens the configured Cribl TCP or TLS socket.
+4. Offers to send one synthetic event.
+5. Leaves continuous polling stopped unless the evaluator types `START`.
+
+See [`INSTALLER.md`](INSTALLER.md) and [`INSTALL.md`](INSTALL.md).
+
+## 10. Re-run the Cribl connection preflight
 
 ```bash
-cd /opt/catocribbler/poller
+cd "${POLLER_DIR}"
 
 docker compose run \
   --rm \
@@ -276,136 +232,154 @@ docker compose run \
   --entrypoint python \
   cato-events-poller \
   -c '
-import os
-import socket
+import poller
 
-host = os.environ["CRIBL_SYSLOG_HOST"]
-port = int(os.environ.get("CRIBL_SYSLOG_PORT", "9514"))
+with poller.open_syslog_socket() as connection:
+    peer = connection.getpeername()
 
-print(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
-with socket.create_connection((host, port), timeout=5):
-    print(f"CRIBL TCP PREFLIGHT PASS host={host} port={port}")
+print(
+    "CRIBL CONNECTION PREFLIGHT PASS "
+    f"host={poller.SYSLOG_HOST} "
+    f"port={poller.SYSLOG_PORT} "
+    f"tls={poller.SYSLOG_TLS} "
+    f"peer={peer}"
+)
 '
 ```
 
-For TLS, run the TLS preflight in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#12-test-cribl-tls-from-the-poller-container).
-
-## 11. Send a synthetic RFC 5424 event
-
-Plain TCP example:
+## 11. Send a synthetic event
 
 ```bash
-printf '<134>1 2026-01-01T00:00:00.000Z test-host cato-events - - - {"time":1767225600000,"event_type":"Synthetic Test","vendor":"cato","product":"cato_sase"}\n' \
-  | nc <cribl-test-host> 9514
+cd "${POLLER_DIR}"
+
+docker compose run \
+  --rm \
+  --no-deps \
+  --entrypoint python \
+  cato-events-poller \
+  -c '
+import time
+import poller
+
+event = {
+    "time": int(time.time() * 1000),
+    "event_type": "Catocribbler Installer Synthetic Test",
+    "vendor": "cato",
+    "product": "cato_sase",
+    "installer_test": True,
+}
+
+with poller.open_syslog_socket() as connection:
+    connection.sendall(poller.syslog_line(event))
+
+print("SYNTHETIC CRIBL EVENT SENT")
+'
 ```
 
 Validate:
 
-- The test Syslog Source receives the event.
+- Source receives the event.
 - `appname` is `cato-events`.
 - `cato_events_route` matches.
 - `cato_normalize` runs.
-- `event_type` is `Synthetic Test`.
-- The isolated test Destination receives the event.
+- `event_type` is `Catocribbler Installer Synthetic Test`.
+- Isolated test Destination receives the event.
 
-## 12. Start the demonstration poller
+## 12. Start continuous polling
 
 ```bash
-cd /opt/catocribbler/poller
+cd "${POLLER_DIR}"
 docker compose up -d
 docker compose logs -f cato-events-poller
 ```
 
-A successful test may show:
+A successful cycle resembles:
 
 ```text
 INFO Fetched=144 Sent=144 marker_len=180
 ```
 
-## 13. Validate every stage
+A new installation begins with an empty marker and may immediately drain retained events in pages of up to 3,000.
 
-Do not stop at the poller log.
+`Fetched=N Sent=N` proves only that the records were written to the Cribl socket.
+
+## 13. Validate every Cribl stage
 
 Confirm:
 
-1. Test Source connection count increases.
-2. Test Source received-event count increases.
-3. Live Capture shows only approved test records.
-4. Demonstration Route match count increases.
-5. Demonstration Pipeline adds `cribl_pipeline=cato_normalize`.
-6. No unexpected `cato_parse_error` values appear.
-7. Isolated test Destination receives events.
-8. Queues and storage remain within approved limits.
+1. Source connection count increases.
+2. Source event count increases.
+3. Live Capture shows approved test records.
+4. Route match count increases.
+5. Pipeline adds `cribl_pipeline=cato_normalize`.
+6. Unexpected `cato_parse_error` values do not appear.
+7. Isolated Destination receives events.
+8. Queues, storage, and licensing remain within approved limits.
 
-`Fetched=144 Sent=144` means the poller wrote 144 records to the socket. It does not prove downstream persistence or correctness.
+## 14. Common failures
 
-## 14. Common demonstration failures
-
-### Cribl Source receives nothing
+### Source receives nothing
 
 Check:
 
-- Correct Docker host address or shared test network.
-- TCP port is published or shared-network DNS works.
-- Source is enabled and deployed.
-- Source listens on TCP rather than only UDP.
-- Source address is reachable.
-- TLS settings match.
+- Correct Docker host or shared network
+- Correct TCP port
+- Port publication
+- TCP rather than UDP-only configuration
+- Source enabled and deployed
+- TLS settings
+- Firewall and Docker routing
 
-### Source receives the event but Route does not match
+### Source receives events but Route does not match
 
-Inspect:
+Check:
 
-- `appname` equals `cato-events`.
-- `__inputId` starts with `syslog:`.
-- Route order.
-- Earlier final routes.
+- `appname=cato-events`
+- `__inputId` begins with `syslog:`
+- Route order
+- Earlier final routes
+- Correct Worker Group deployment
 
 ### Route matches but Pipeline fails
 
-Look for:
+Inspect:
 
 ```text
 cato_parse_error
 cribl_pipeline=cato_normalize_parse_failed
 ```
 
-Capture only approved test data and confirm `message` contains one complete JSON object.
+Confirm the syslog `message` field contains one complete JSON object.
 
 ### Pipeline succeeds but Destination receives nothing
 
 Check:
 
-- Route output ID.
-- Destination health and credentials.
-- Backpressure and persistent queues.
-- Destination-side filters.
-- Storage and evaluation-license capacity.
+- Route output ID
+- Destination health and credentials
+- Backpressure and persistent queues
+- Destination-side filters
+- Storage and evaluation-license capacity
 
 ### TCP works but TLS fails
 
 Check:
 
-- Cribl TLS is enabled on the exact test port.
-- Poller has `CRIBL_SYSLOG_TLS=true`.
-- Server name matches a certificate SAN.
-- CA chain is correct.
-- Source is not requiring a client certificate.
+- TLS is enabled on the exact Source port
+- Server name matches a certificate SAN
+- CA chain is correct
+- Certificate is current
+- Source is not requiring a client certificate
 
 ## 15. Remove the demonstration
 
-When testing ends:
+```bash
+cd "${POLLER_DIR}"
+docker compose down
+```
 
-- Stop and remove the poller container.
-- Revoke the Cato API key.
-- Remove demonstration Cribl objects if they are no longer required.
-- Remove the poller from shared Docker networks.
-- Remove test files and sensitive data according to policy.
+Then revoke the Cato key, remove the demonstration service principal when appropriate, remove test-only Cribl objects, detach external Docker networks, and destroy test credentials and data according to policy.
 
 ## No support, license, or warranty
 
-No support is provided by Damon Cassell, Cato Networks, Cribl, contributors, employers, vendors, or any other party.
-
-This repository intentionally includes no license grant from the author. All material is provided “AS IS” and “AS AVAILABLE,” without warranty or liability to the maximum extent permitted by law.
-
-Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
+No support is provided by Damon Cassell, Cato Networks, Cribl, contributors, employers, vendors, or any other party. The repository contains no license grant from the author. All material is provided “AS IS” and “AS AVAILABLE.” Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
