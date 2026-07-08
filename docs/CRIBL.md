@@ -1,77 +1,127 @@
-# Cribl Stream configuration
+# Integrate the poller with an existing Cribl Stream Docker environment
 
-This guide configures Cribl Stream to receive the RFC 5424 syslog records emitted by `cato-events-poller`, parse the JSON payload, and route the resulting events to a Destination.
+This guide does not deploy Cribl Stream.
 
-Cribl menu names and deployment controls can vary by version and topology. The required logical settings are listed explicitly so they can be applied in the UI or through normal Cribl configuration management.
+It assumes the customer already has Cribl Stream running in Docker and needs to add the Cato poller as a new upstream syslog sender.
 
-## Data flow
+## 1. Identify the existing Cribl data-processing container
 
-```text
-cato-events-poller
-    |
-    | RFC 5424 syslog over TCP or TLS
-    v
-Cribl Syslog Source: in_syslog
-    |
-    v
-Route: cato_events_route
-    |
-    v
-Pipeline: cato_normalize
-    |
-    v
-Validation or production Destination
+List the containers:
+
+```bash
+docker ps \
+  --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-## 1. Select the Worker Group
+Choose the correct target:
 
-In a distributed Cribl deployment, make all Source, Pipeline, Route, and Destination changes in the Worker Group that will receive the Cato traffic.
+- Single-instance Cribl: the single Cribl container.
+- Distributed Cribl: a Worker container, Worker load balancer, or VIP for the target Worker Group.
+- Do not use the Leader management port as the syslog destination unless that node is intentionally processing data.
 
-The poller must connect to a Worker, load balancer, or virtual IP that sends traffic to that Worker Group. It normally should not send syslog to the Leader management port.
+Inspect the target:
 
-## 2. Create the Syslog Source
+```bash
+CRIBL_CONTAINER=cribl-worker
 
-Create a Syslog Source with these baseline settings:
+docker inspect "$CRIBL_CONTAINER" \
+  --format 'Name={{.Name}}
+Networks={{json .NetworkSettings.Networks}}
+Ports={{json .NetworkSettings.Ports}}'
 
-| Setting | Recommended value |
+docker port "$CRIBL_CONTAINER"
+```
+
+## 2. Decide how the poller connects
+
+### Published host port
+
+If the existing Cribl container publishes TCP 9514, use the Docker host's LAN IP address or DNS name:
+
+```dotenv
+CRIBL_SYSLOG_HOST=192.0.2.25
+CRIBL_SYSLOG_PORT=9514
+```
+
+Typical Docker mapping:
+
+```text
+0.0.0.0:9514->9514/tcp
+```
+
+Do not configure `localhost` or `127.0.0.1`; inside the poller container those point to the poller itself.
+
+### Existing shared Docker network
+
+Attach the poller to the Cribl network with `poller/compose.override.yaml`:
+
+```yaml
+services:
+  cato-events-poller:
+    networks:
+      - cribl_existing
+
+networks:
+  cribl_existing:
+    external: true
+    name: <actual-existing-cribl-network-name>
+```
+
+Then use the Cribl container/service name:
+
+```dotenv
+CRIBL_SYSLOG_HOST=cribl-worker
+CRIBL_SYSLOG_PORT=9514
+```
+
+See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#3-choose-the-docker-connectivity-model) for discovery and validation commands.
+
+## 3. Reuse or enable the existing Syslog Source
+
+Current Cribl Stream versions include a preconfigured Syslog Source on port `9514`. The customer can reuse it, clone it, or create another Source.
+
+In the target Worker Group or single instance, confirm:
+
+| Setting | Value |
 |---|---|
 | Source type | Syslog |
-| Source ID | `in_syslog` |
-| Protocol | TCP or TLS over TCP |
-| Port | `9514` |
+| Protocol | TCP, or TCP with TLS |
+| Address | `0.0.0.0` unless deliberately restricted |
+| TCP port | `9514` or another agreed port |
 | Enabled | Yes |
+| Configuration state | Saved, committed, and deployed |
 
-The supplied Route assumes the Source ID is `in_syslog` because Cribl identifies events from that source with an input ID beginning with:
+The poller sends RFC 5424 records.
 
-```text
-syslog:in_syslog
+The Source ID can be `in_syslog_default`, `in_syslog`, or a customer-defined value. The repository Route accepts any Syslog Source ID and identifies this integration by:
+
+```javascript
+appname === 'cato-events'
 ```
 
-If a different Source ID is used, update the Route filter accordingly.
+## 4. Confirm Docker exposes the listener
 
-### Listener address and firewall
+For the host-published-port model:
 
-Confirm that:
+```bash
+docker port "$CRIBL_CONTAINER" 9514/tcp
+ss -lnt | grep ':9514 '
+```
 
-- The Source listens on an address reachable from the Docker host.
-- TCP port `9514`, or the selected alternative, is allowed through host and network firewalls.
-- A container can connect to the advertised hostname or IP address.
-- A load balancer preserves a stable TCP path long enough for each page to be transmitted.
+If the Source is enabled inside Cribl but Docker does not publish the port, either:
 
-The poller opens a TCP connection for each non-empty EventsFeed page and sends all events in that page over the connection.
+- Add the port mapping to the customer's existing Cribl Compose or Docker configuration, or
+- Use the shared external Docker network model.
 
-## 3. Configure TLS when used
+Do not launch a replacement Cribl container merely to expose one port. That is the sort of solution that wins a five-minute demo and ruins the following week.
 
-For production, enable TLS on the Cribl Syslog Source.
+## 5. Configure TLS when required
 
-The Cribl certificate must:
+For production, use TLS unless the customer's network design explicitly permits plain TCP.
 
-- Be valid for the DNS name configured as `CRIBL_SYSLOG_SERVER_NAME`.
-- Be within its validity period.
-- Include any required intermediate certificates in the served chain.
-- Be trusted by the CA file mounted into the poller as `/run/secrets/cribl_ca.pem`.
+The existing Cribl Syslog Source must have TLS enabled on the selected TCP port.
 
-Corresponding poller settings:
+The poller needs:
 
 ```dotenv
 CRIBL_SYSLOG_TLS=true
@@ -80,61 +130,48 @@ CRIBL_SYSLOG_SERVER_NAME=cribl-worker.example.com
 CRIBL_SYSLOG_CA_FILE=/run/secrets/cribl_ca.pem
 ```
 
+The certificate must:
+
+- Contain the configured server name in its SAN.
+- Be within its validity period.
+- Include required intermediates.
+- Chain to the CA in `poller/secrets/cribl_ca.pem`.
+
+The current poller validates the server certificate. It does not present a client certificate, so do not enable mandatory mutual TLS on the Cribl Source unless the poller is extended for client-certificate authentication.
+
 For a non-TLS lab Source:
 
 ```dotenv
 CRIBL_SYSLOG_TLS=false
 ```
 
-The connection setting must match on both sides. Enabling TLS on only one side produces immediate connection or handshake failures, because computers remain stubbornly literal.
+## 6. Add the normalization Pipeline to the existing environment
 
-## 4. Create a validation Destination
-
-Before routing to a production SIEM or data lake, create a simple validation Destination.
-
-A filesystem Destination is useful in a lab because it proves that events passed through the Source, Route, and Pipeline. Example Destination ID:
-
-```text
-cato_file_output
-```
-
-Choose a path that is writable by the Cribl Worker and has enough capacity for an initial backlog.
-
-After validation, replace `cato_file_output` with the intended production Destination ID, such as a SIEM, object store, Kafka, or another supported target.
-
-## 5. Create the `cato_normalize` Pipeline
-
-The supplied Pipeline configuration is:
+Use:
 
 ```text
 cribl/pipelines/cato_normalize/conf.yml
 ```
 
-Create a Pipeline with ID:
+Create or import a Pipeline with ID:
 
 ```text
 cato_normalize
 ```
 
-Then reproduce or deploy the configuration from the supplied file.
+The Pipeline:
 
-The Pipeline performs these actions:
+1. Parses the JSON payload from the syslog `message` field.
+2. Verifies the payload is an object.
+3. Promotes JSON properties to top-level Cribl fields.
+4. Adds `cribl_pipeline=cato_normalize`.
+5. Adds `vendor=cato` and `product=cato_sase` when absent.
+6. Converts a numeric Cato `time` value to Cribl `_time` when possible.
+7. Writes normalized JSON to `_raw`.
+8. Removes the original `message` field.
+9. Sets `cato_parse_error` if parsing fails.
 
-1. Reads the JSON payload from the syslog `message` field.
-2. Verifies that the payload is a JSON object.
-3. Promotes all JSON properties to top-level Cribl event fields.
-4. Adds:
-   - `cribl_pipeline=cato_normalize`
-   - `vendor=cato` when absent
-   - `product=cato_sase` when absent
-5. Converts a numeric Cato `time` value to Cribl `_time` when possible.
-6. Stores the normalized JSON in `_raw`.
-7. Removes the original `message` field.
-8. Adds `cato_parse_error` and marks the pipeline as failed if parsing raises an exception.
-
-### Expected input before the Pipeline
-
-Cribl's Syslog Source should parse the RFC 5424 envelope and expose fields similar to:
+Expected pre-Pipeline fields include:
 
 ```text
 appname = cato-events
@@ -142,14 +179,10 @@ host = cato-events-poller
 message = {"time":...,"event_type":...,"vendor":"cato",...}
 ```
 
-### Expected output after the Pipeline
-
-The JSON payload should be promoted, for example:
+Expected post-Pipeline fields include:
 
 ```json
 {
-  "appname": "cato-events",
-  "host": "cato-events-poller",
   "event_type": "Security",
   "event_sub_type": "Anti Malware",
   "account_id": "12345",
@@ -159,62 +192,67 @@ The JSON payload should be promoted, for example:
 }
 ```
 
-The exact Cato event fields vary by event type.
+## 7. Add the Route to the existing Worker Group
 
-## 6. Create the Route
-
-The supplied Route example is:
+Use:
 
 ```text
 cribl/routes/cato_events_route.yml
 ```
 
-Create a Route with these values:
+The Route filter is:
+
+```javascript
+__inputId.startsWith('syslog:') && appname === 'cato-events'
+```
+
+Recommended settings:
 
 | Setting | Value |
 |---|---|
 | Route ID | `cato_events_route` |
-| Name | `cato_events_route` |
-| Filter | `__inputId.startsWith('syslog:in_syslog') && appname === 'cato-events'` |
+| Filter | `__inputId.startsWith('syslog:') && appname === 'cato-events'` |
 | Pipeline | `cato_normalize` |
-| Output | `cato_file_output` or the selected production Destination |
+| Output | Customer validation or production Destination |
 | Final | Yes |
 | Enabled | Yes |
 
-The `appname` value is set by the poller in the RFC 5424 header and is always:
+Replace the example output ID:
 
 ```text
-cato-events
+cato_file_output
 ```
 
-### Route ordering
+with the customer's actual Destination ID.
 
-Place the Cato Route before broad catch-all routes that could consume the same Syslog Source traffic.
+Place the Route before broad catch-all routes that might consume the event first.
 
-Because the supplied Route is final, a matching event will not continue to lower Routes after it is sent to the selected output.
+## 8. Use an existing or temporary validation Destination
 
-## 7. Deploy the Cribl changes
+The customer may already have a production Destination. For initial validation, a temporary filesystem or other controlled Destination is useful because it proves Source, Route, Pipeline, and output delivery.
+
+Confirm the Destination:
+
+- Is enabled.
+- Is healthy.
+- Has valid credentials.
+- Has sufficient capacity for an initial EventsFeed backlog.
+- Is assigned as the Cato Route output.
+
+## 9. Commit and deploy changes
 
 In a distributed deployment:
 
-1. Save the Source, Pipeline, Route, and Destination.
-2. Commit the configuration changes.
-3. Deploy them to the target Worker Group.
-4. Confirm that the Worker reports the new configuration as active.
+1. Save the Source, Pipeline, Route, and Destination changes.
+2. Commit the configuration.
+3. Deploy to the target Worker Group.
+4. Confirm the Worker reports the new configuration as active.
 
-Do not start the Cato poller while the Route exists only as an undeployed draft. The poller will happily send data into whatever configuration is actually running, not the configuration someone intended to deploy later.
+A configuration visible in the UI but not deployed is not active. Cribl remains stubbornly attached to reality in this respect.
 
-## 8. Validate the Source before starting the poller
+## 10. Test connectivity before starting the poller
 
-Confirm that the listener is active on the Worker host.
-
-From the Docker host, test TCP connectivity:
-
-```bash
-nc -vz CRIBL_HOST 9514
-```
-
-Or use the poller image after `.env` has been configured:
+From the poller directory:
 
 ```bash
 cd /opt/catocribbler/poller
@@ -231,16 +269,33 @@ import socket
 host = os.environ["CRIBL_SYSLOG_HOST"]
 port = int(os.environ.get("CRIBL_SYSLOG_PORT", "9514"))
 
+print(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
 with socket.create_connection((host, port), timeout=5):
     print(f"CRIBL TCP PREFLIGHT PASS host={host} port={port}")
 '
 ```
 
-A TCP preflight does not prove that TLS, routing, parsing, or destination delivery is correct.
+For TLS, run the TLS preflight in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#12-test-cribl-tls-from-the-poller-container).
 
-## 9. Start the poller and validate live events
+## 11. Send a synthetic RFC 5424 event
 
-Start the poller:
+Plain TCP example:
+
+```bash
+printf '<134>1 2026-01-01T00:00:00.000Z test-host cato-events - - - {"time":1767225600000,"event_type":"Synthetic Test","vendor":"cato","product":"cato_sase"}\n' \
+  | nc <cribl-host> 9514
+```
+
+Validate in Cribl:
+
+- Syslog Source receives the event.
+- `appname` is `cato-events`.
+- `cato_events_route` matches.
+- `cato_normalize` runs.
+- `event_type` is `Synthetic Test`.
+- The selected Destination receives the event.
+
+## 12. Start the Cato poller
 
 ```bash
 cd /opt/catocribbler/poller
@@ -248,73 +303,52 @@ docker compose up -d
 docker compose logs -f cato-events-poller
 ```
 
-Look for matching counts:
+Healthy output:
 
 ```text
 INFO Fetched=144 Sent=144 marker_len=180
 ```
 
-In Cribl, verify:
+## 13. Validate every Cribl stage
 
-- The Syslog Source's received event count increases.
-- Live capture or preview shows `appname=cato-events`.
-- The Cato Route matches the events.
-- The `cato_normalize` Pipeline runs.
-- `cribl_pipeline` is `cato_normalize`.
-- `vendor` is `cato`.
-- `product` is `cato_sase`.
-- `message` has been removed after successful parsing.
-- `_raw` contains normalized JSON.
-- The Destination's delivered event count increases.
+Do not stop at the poller log.
 
-## 10. Validate with a synthetic syslog record
+Confirm:
 
-This test validates the Cribl Source, Route, Pipeline, and Destination without calling Cato.
+1. Source connection count increases.
+2. Source received-event count increases.
+3. Live Capture shows Cato records.
+4. Route match count increases.
+5. Pipeline adds `cribl_pipeline=cato_normalize`.
+6. No unexpected `cato_parse_error` fields appear.
+7. Destination delivered-event count increases.
+8. Persistent queues and backpressure remain healthy.
 
-From a host that can reach the Source:
+`Fetched=144 Sent=144` means the poller wrote 144 records to the TCP socket. It does not prove downstream delivery.
 
-```bash
-printf '<134>1 2026-01-01T00:00:00.000Z test-host cato-events - - - {"time":1767225600000,"event_type":"Synthetic Test","vendor":"cato","product":"cato_sase"}\n' \
-  | nc CRIBL_HOST 9514
-```
+## 14. Common existing-environment failures
 
-For a TLS Source, use a TLS-capable client and the appropriate CA verification rather than plain `nc`.
-
-The synthetic event should:
-
-- Match `cato_events_route`.
-- Pass through `cato_normalize`.
-- Reach the configured Destination.
-- Contain `event_type=Synthetic Test`.
-
-## 11. Troubleshooting Cribl ingestion
-
-### The poller logs `Sent=N`, but Cribl shows nothing
+### Cribl Source receives nothing
 
 Check:
 
-- The poller is connecting to the correct Worker, VIP, and port.
-- The Source is enabled and deployed.
-- The protocol matches: TCP versus TLS.
-- Host and network firewalls permit the connection.
-- The event is not being captured by an earlier Route.
-- The supplied Route filter matches the actual Source ID.
+- Correct Docker host IP or shared network.
+- TCP port is published or shared-network DNS works.
+- Source is enabled and deployed.
+- Source listens on TCP rather than only UDP.
+- Source address is not restricted to an unreachable interface.
+- TLS settings match.
 
-### Source receives events, but the Route does not match
+### Source receives the event but Route does not match
 
-Inspect the incoming event before routing:
+Inspect:
 
-- Confirm `appname` equals `cato-events`.
-- Confirm `__inputId` begins with `syslog:in_syslog`.
-- If the Source ID differs, change the Route filter.
+- `appname` equals `cato-events`.
+- `__inputId` starts with `syslog:`.
+- Route order.
+- Earlier final routes.
 
-Example alternate filter:
-
-```javascript
-__inputId.startsWith('syslog:my_cato_source') && appname === 'cato-events'
-```
-
-### Route matches, but parsing fails
+### Route matches but Pipeline fails
 
 Look for:
 
@@ -323,47 +357,30 @@ cato_parse_error
 cribl_pipeline=cato_normalize_parse_failed
 ```
 
-Capture the pre-Pipeline event and confirm that `message` contains one complete JSON object. Do not post production event contents into a public issue because they can contain tenant, user, device, and security data.
+Capture the pre-Pipeline event and confirm `message` contains one complete JSON object.
 
-### Events parse but do not reach the Destination
+### Pipeline succeeds but Destination receives nothing
 
 Check:
 
+- Route output ID.
 - Destination health and credentials.
-- Output ID on the Route.
-- Destination backpressure or persistent queue status.
-- Any Destination-side filtering.
-- Worker disk capacity when using filesystem output or persistent queues.
+- Backpressure and persistent queues.
+- Destination-side filters.
+- Storage and licensing capacity.
 
-### TLS handshake failure
+### TCP works but TLS fails
 
-Confirm:
+Check:
 
-- `CRIBL_SYSLOG_TLS=true`.
-- The Source is actually using TLS on the configured port.
-- `CRIBL_SYSLOG_SERVER_NAME` matches the certificate.
-- `secrets/cribl_ca.pem` contains the correct CA chain.
-- The certificate and issuing CA are not expired.
-- Middleboxes are not replacing the certificate.
+- Cribl TLS is enabled on the exact port.
+- Poller has `CRIBL_SYSLOG_TLS=true`.
+- Server name matches certificate SAN.
+- CA chain is correct.
+- Source is not requiring a client certificate.
 
-## 12. Production checklist
+## Related guides
 
-Before changing the Route to a production Destination:
-
-- [ ] Source receives live events.
-- [ ] TLS is enabled where required.
-- [ ] Route matches only the intended Cato records.
-- [ ] Pipeline parses representative Cato event types.
-- [ ] No unexpected `cato_parse_error` fields are present.
-- [ ] Destination delivery is confirmed.
-- [ ] Initial backlog volume has been estimated.
-- [ ] Destination and Cribl licensing/capacity can handle the rate.
-- [ ] Monitoring exists for Source, Route, Pipeline errors, and Destination health.
-- [ ] The Cato marker is backed up as part of deployment-state backup.
-
-## Related documentation
-
-- [`INSTALL.md`](INSTALL.md): poller installation and Cato configuration.
-- [`OPERATIONS.md`](OPERATIONS.md): upgrades, backup, recovery, and troubleshooting.
-- [`../cribl/pipelines/cato_normalize/conf.yml`](../cribl/pipelines/cato_normalize/conf.yml): supplied Pipeline configuration.
-- [`../cribl/routes/cato_events_route.yml`](../cribl/routes/cato_events_route.yml): supplied Route example.
+- [`INSTALL.md`](INSTALL.md): install and configure the poller.
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md): complete Cato API, Docker network, Cribl, TLS, and permissions troubleshooting.
+- [`OPERATIONS.md`](OPERATIONS.md): upgrades, backup, recovery, and monitoring.
