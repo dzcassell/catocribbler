@@ -1,0 +1,345 @@
+
+</colgroup>
+<thead>
+<tr class="header">
+<th><p><strong>Never embed the API key in source code</strong></p>
+<p>The Cato API uses the x-api-key HTTP header. Store the value in a
+secrets manager or mounted secret file and inject it at runtime. Do not
+commit it to Git, bake it into a container image, or place it in
+customer-facing documents. [C3][C7]</p></th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+
+## 3.4 Test API connectivity safely
+
+Run the test from the intended poller network path. The example reads
+the key from a protected file so it does not appear as a literal
+command-line argument.
+
+> export
+> CATO_API_URL='https://api.\<prefix\>.catonetworks.com/api/v1/graphql2'
+>
+> export CATO_ACCOUNT_ID='\<CATO_ACCOUNT_ID\>'
+>
+> export CATO_API_KEY_FILE='/run/secrets/cato_api_key'
+>
+> curl --fail-with-body --silent --show-error \\
+>
+> --request POST "\$CATO_API_URL" \\
+>
+> --header 'Content-Type: application/json' \\
+>
+> --header "x-api-key: \$(cat "\$CATO_API_KEY_FILE")" \\
+>
+> --data-binary @- \<\<JSON
+>
+> {
+>
+> "query": "query
+> eventsFeed(\\accountIDs:\[ID!\]!,\\marker:String){eventsFeed(accountIDs:\\accountIDs,marker:\\marker){marker
+> fetchedCount accounts{id records{time eventType eventSubType
+> fieldsMap}}}}",
+>
+> "variables": {
+>
+> "accountIDs": \["\$CATO_ACCOUNT_ID"\],
+>
+> "marker": ""
+>
+> }
+>
+> }
+>
+> JSON
+
+Expected result: an HTTP 200 response with a data.eventsFeed object. A
+fetchedCount of zero can be normal immediately after enablement or
+during a quiet interval. Authentication, GraphQL, and account-scope
+errors must be resolved before deploying the poller.
+
+# 4. Deploy the reference EventsFeed poller
+
+The reference poller performs four jobs: retrieve EventsFeed pages,
+normalize Cato field names, send each record to Cribl through
+RFC5424-style syslog, and persist the returned marker only after a page
+is delivered. The full copy-ready files are in Appendix A.
+
+## 4.1 Recommended runtime layout
+
+> /opt/cato-cribl-poller/
+>
+> ├── compose.yaml
+>
+> ├── Dockerfile
+>
+> ├── requirements.txt
+>
+> ├── poller.py
+>
+> ├── .env \# non-secret settings only, chmod 600
+>
+> ├── secrets/
+>
+> │ └── cato_api_key \# secret value only, chmod 600
+>
+> └── state/
+>
+> └── marker.txt \# created and updated by the poller
+
+## 4.2 Create directories and permissions
+
+> sudo install -d -m 0750 /opt/cato-cribl-poller
+>
+> sudo install -d -m 0750 /opt/cato-cribl-poller/state
+>
+> sudo install -d -m 0700 /opt/cato-cribl-poller/secrets
+>
+> sudo install -m 0600 /dev/null /opt/cato-cribl-poller/.env
+>
+> sudo install -m 0600 /dev/null
+> /opt/cato-cribl-poller/secrets/cato_api_key
+
+## 4.3 Populate customer values
+
+Write only the API key value into secrets/cato_api_key. Put the
+remaining values in .env. The example below is deliberately
+tenant-neutral.
+
+> CATO_API_URL=https://api.\<prefix\>.catonetworks.com/api/v1/graphql2
+>
+> CATO_ACCOUNT_ID=\<CATO_ACCOUNT_ID\>
+>
+> CATO_API_KEY_FILE=/run/secrets/cato_api_key
+>
+> CRIBL_SYSLOG_HOST=\<CRIBL_WORKER_OR_VIP_FQDN\>
+>
+> CRIBL_SYSLOG_PORT=\<SYSLOG_PORT\>
+>
+> CRIBL_SYSLOG_TLS=true
+>
+> CRIBL_SYSLOG_SERVER_NAME=\<TLS_SERVER_NAME\>
+>
+> CRIBL_SYSLOG_CA_FILE=/run/secrets/cribl_ca.pem
+>
+> POLL_INTERVAL_SECONDS=30
+>
+> STATE_FILE=/state/marker.txt
+>
+> LOG_LEVEL=INFO
+
+## 4.4 Start and observe the poller
+
+> cd /opt/cato-cribl-poller
+>
+> docker compose build --pull
+>
+> docker compose up -d
+>
+> docker compose ps
+>
+> docker compose logs --follow --tail=100 cato-events-poller
+
+## 4.5 Expected poller behavior
+
+- On first start, the marker is empty and the poller begins consuming
+  the available three-day queue.
+
+- When fetchedCount reaches 3,000, the poller immediately requests
+  another page rather than waiting for the normal polling interval.
+
+- The marker file changes as pages are sent successfully.
+
+- If syslog delivery fails before a page is complete, the marker is not
+  advanced. The next attempt may replay records, which favors continuity
+  over silent loss.
+
+- HTTP 429 and transient server errors are retried with backoff.
+
+<table>
+<colgroup>
+<col style="width: 100%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th><p><strong>Duplicate handling</strong></p>
+<p>Marker-at-page-boundary delivery can replay a partially sent page
+after a failure. If the downstream platform requires strict
+deduplication, define a deterministic event key from Cato fields and
+apply deduplication in Cribl or the destination.</p></th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+
+# 5. Configure Cribl Stream
+
+Configure the target Worker Group through the Cribl Leader or
+Cribl.Cloud UI. Save, commit, and deploy after each tested change.
+\[R3\]
+
+## 5.1 Create or clone a Syslog Source
+
+15. Open Cribl Stream and select the target Worker Group.
+
+16. Go to Data \> Sources \> Syslog and add a new Source or clone an
+    existing Syslog Source.
+
+17. Set Input ID to in_syslog_cato_tcp or the customer naming standard.
+
+18. Set Address to 0.0.0.0 unless the customer has a specific
+    interface-binding requirement.
+
+19. Set the approved TCP port. Cribl includes a preconfigured Syslog
+    Source on TCP and UDP 9514, but a dedicated Cato Source is easier to
+    secure and monitor. \[R1\]
+
+20. Enable TLS for production. Install the receiving certificate and
+    trusted chain according to customer policy. \[R2\]
+
+21. Restrict source IPs to the poller or approved load balancer
+    addresses.
+
+22. Choose Source persistent queue behavior based on loss tolerance and
+    downstream backpressure design. \[R4\]
+
+23. Save, commit, and deploy.
+
+<table>
+<colgroup>
+<col style="width: 100%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th><p><strong>Route filter preview note</strong></p>
+<p>Cribl documents a Preview Full difference involving the trailing
+colon in __inputId filters. Using
+startsWith("syslog:in_syslog_cato_tcp") without a trailing colon works
+predictably in previews and normal processing. [R1]</p></th>
+</tr>
+</thead>
+<tbody>
+</tbody>
+</table>
+
+## 5.2 Create a validation destination
+
+| **Setting**    | **Recommended validation value**                                     |
+|----------------|----------------------------------------------------------------------|
+| Destination ID | cato_validation_file                                                 |
+| Type           | Filesystem, object storage, or another low-risk customer destination |
+| Path or bucket | \<CUSTOMER_VALIDATION_PATH\>                                         |
+| Format         | JSON                                                                 |
+| Compression    | gzip when supported                                                  |
+| Retention      | Short, explicit, and approved                                        |
+| Backpressure   | Block or persistent queue behavior consistent with the test plan     |
+
+In a multi-worker deployment, a local filesystem destination writes to
+each Worker independently. Use centralized object storage or another
+shared validation target when the customer needs a single inspection
+location.
+
+## 5.3 Create the cato_normalize Pipeline
+
+Create a Pipeline named cato_normalize and add a Code function with
+filter true. Paste the validated function from Appendix B. The function
+promotes the poller JSON fields, sets integration metadata, converts
+millisecond timestamps to Cribl \_time seconds, preserves the clean Cato
+payload in \_raw, and removes the duplicate escaped message field.
+
+## 5.4 Create the Cato Route
+
+| **Route setting** | **Value**                                                                        |
+|-------------------|----------------------------------------------------------------------------------|
+| Name              | cato_events_route                                                                |
+| Filter            | \_\_inputId.startsWith('syslog:in_syslog_cato_tcp') && appname === 'cato-events' |
+| Pipeline          | cato_normalize                                                                   |
+| Destination       | cato_validation_file during validation                                           |
+| Final             | On, unless the design intentionally sends matched events to later routes         |
+| Order             | Above broad catch-all routes                                                     |
+
+A broad final route placed above the Cato route can make the Cato route
+unreachable. Confirm route order in the Worker Group before deploying.
+
+## 5.5 Commit and deploy
+
+24. Save the Source, Pipeline, Route, and validation Destination.
+
+25. Review the pending changes and confirm that they contain only the
+    intended Worker Group configuration.
+
+26. Commit with a descriptive message.
+
+27. Deploy the configuration to the target Worker Group.
+
+28. Confirm that Workers report the new configuration version and remain
+    healthy. \[R3\]
+
+# 6. Validate the integration end to end
+
+## 6.1 Validate in layers
+
+| **Layer**         | **Test**                           | **Pass criteria**                                                           |
+|-------------------|------------------------------------|-----------------------------------------------------------------------------|
+| Cato API          | Run the GraphQL connectivity test  | HTTP 200; correct account; no authentication or GraphQL errors              |
+| Poller            | Review logs and marker file        | Fetched and sent counts appear; marker persists and advances                |
+| Network           | Test TCP/TLS path to Cribl         | Connection succeeds; certificate validation succeeds when TLS is enabled    |
+| Cribl Source      | Capture or preview incoming events | host=cato-events-poller, appname=cato-events, JSON in message               |
+| Route             | Preview against a captured event   | Event matches cato_events_route and no earlier final route intercepts it    |
+| Pipeline          | Preview cato_normalize             | Top-level fields appear; cribl_pipeline=cato_normalize; no cato_parse_error |
+| Destination       | Inspect validation output          | JSON records arrive in the expected path/bucket/dataset                     |
+| Production target | Search the final platform          | Expected index/schema, timestamps, field names, and event counts            |
+
+## 6.2 Minimum expected normalized fields
+
+> {
+>
+> "time": 1700000000000,
+>
+> "event_type": "Security",
+>
+> "event_sub_type": "Internet Firewall",
+>
+> "action": "Monitor",
+>
+> "account_id": "\<CATO_ACCOUNT_ID\>",
+>
+> "vendor": "cato",
+>
+> "product": "cato_sase",
+>
+> "cribl_pipeline": "cato_normalize",
+>
+> "\_time": 1700000000,
+>
+> "\_raw": "{...clean Cato JSON...}"
+>
+> }
+
+## 6.3 Controlled restart test
+
+29. Record the current marker file hash or value length.
+
+30. Restart the poller container.
+
+31. Confirm the same state file is mounted and the poller resumes from
+    the stored marker.
+
+32. Wait for new Cato activity and confirm the marker advances again.
+
+33. Verify that no API key or event data is written to standard output
+    beyond the customer-approved logging level.
+
+## 6.4 Customer acceptance criteria
+
+| **Acceptance item** | **Pass criteria**                                                                                           |
+|---------------------|-------------------------------------------------------------------------------------------------------------|
+| Connectivity        | Approved network paths exist from the poller to Cato and Cribl, and from Cribl to the customer destination. |
+| Authentication      | The service API key retrieves EventsFeed data only for the intended customer account.                       |
+| Continuity          | The marker survives restarts and advances during normal operation.                                          |
+| Ingest              | Cribl receives the intended Cato syslog records on the dedicated Source.                                    |
+| Normalization       | Fields are promoted, \_time is correct, \_raw is preserved, and parse failures are visible.                 |
+| Delivery          
