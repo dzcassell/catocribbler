@@ -13,7 +13,7 @@ The preferred installation method is the interactive [`install.sh`](../install.s
 |---|---|
 | Installation directory | `/opt/cribbler` |
 | Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
-| Cribl connection method | Published host TCP port |
+| Cribl connection method | Auto-detected published host TCP port |
 | Cribl Syslog TCP port | `9514` |
 | Cribl TLS | Disabled |
 | Poll interval | 30 seconds |
@@ -50,33 +50,42 @@ docker ps \
   --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-## 3. Choose how the poller reaches Cribl
+## 3. How Cribl connectivity is selected
 
-### Option 1: Published host TCP port, recommended default
+### Automatic published-listener detection
 
-Use this when the Cribl container publishes the Syslog Source port to the Docker host, for example:
+Before asking for any Cribl address, the installer:
+
+1. Finds running containers whose names contain `cribl`.
+2. Checks for a published `9514/tcp` listener.
+3. Detects the Docker host's primary IPv4 address.
+4. Converts a wildcard mapping such as `0.0.0.0:9514` into a usable address such as `192.168.40.15:9514`.
+5. Shows the detected container, mapping, and address.
+6. Asks whether to use it.
+
+Typical prompt:
 
 ```text
-0.0.0.0:9514->9514/tcp
+The installer found a running Cribl container with a published Syslog listener:
+
+  Cribl container:            cribl-worker
+  Docker port mapping:        0.0.0.0:9514
+  Address the poller will use: 192.168.40.15:9514
+
+Use this detected Cribl listener [Y/n]:
 ```
 
-The installer asks for the Docker host's LAN IP address or DNS name.
+For a normal installation, press Enter. No IP address, port, Docker network, or container alias needs to be discovered manually.
 
-This is the recommended default because it:
+### Alternative 1: Different published host address and port
 
-- Is simpler to explain and troubleshoot.
-- Does not attach the poller to Cribl's internal Docker network.
-- Does not depend on customer-specific Docker network names and aliases.
-- Can work from the same Docker host or another reachable test host.
+Use this only when the detected listener is not the intended Cribl Source or when Cribl uses another published port.
 
-Do not use `localhost` or `127.0.0.1`; inside the poller container those addresses refer to the poller itself.
+The installer supplies its detected primary host address as the default when available.
 
-### Option 2: Shared external Docker network, advanced fallback
+### Alternative 2: Shared external Docker network
 
-Use this when:
-
-- Cribl does not publish the Syslog TCP port, or
-- Direct container-to-container connectivity is specifically required.
+Use this only when Cribl does not publish the Syslog TCP port or direct container-to-container connectivity is specifically required.
 
 The poller joins an existing non-production Cribl Docker network and connects using the Cribl container, service, or network-alias name.
 
@@ -86,8 +95,6 @@ This method:
 - Gives the poller access to other services exposed on that network.
 - Is less portable between customer environments.
 - Requires the network to exist before installation.
-
-**Recommendation:** choose option 1 unless the Cribl listener is not published or the deployment specifically requires a shared Docker network.
 
 ## 4. Create a fresh Cato service principal
 
@@ -183,16 +190,15 @@ The installer asks for:
    ```
 
 4. Numeric Cato account ID.
-5. Cribl connection method.
-6. Cribl Docker-host address or shared-network details.
-7. Cribl Syslog TCP port, default `9514`.
-8. Whether TLS is enabled.
-9. TLS server name and PEM CA chain when TLS is used.
-10. Polling interval, default 30 seconds.
-11. The new Cato API key, entered twice without echo.
-12. Whether to create the installation.
-13. Whether to send one synthetic test event.
-14. Whether to start continuous polling.
+5. Confirmation of an automatically detected Cribl listener, when found.
+6. Alternative Cribl networking only when detection fails or is rejected.
+7. Whether TLS is enabled.
+8. TLS server name and PEM CA chain when TLS is used.
+9. Polling interval, default 30 seconds.
+10. The new Cato API key, entered twice without echo.
+11. Whether to create the installation.
+12. Whether to send one synthetic test event.
+13. Whether to start continuous polling.
 
 The installer rejects relative paths, `/`, `/opt`, non-empty install directories, invalid account IDs, invalid ports, missing Docker networks, missing CA files, and mismatched API-key entries.
 
