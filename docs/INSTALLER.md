@@ -9,8 +9,6 @@ The installer reads answers directly from `/dev/tty`, so its prompts remain inte
 
 ## Recommended customer command
 
-Download the script, inspect it, and then run it:
-
 ```bash
 INSTALL_REF=<reviewed-commit-sha>
 
@@ -24,7 +22,7 @@ sudo env \
   bash /tmp/catocribbler-install.sh
 ```
 
-This pins both the downloaded installer and the repository checkout to the same reviewed commit.
+This pins both the downloaded installer and repository checkout to the same reviewed commit.
 
 ## Direct one-line command
 
@@ -44,54 +42,59 @@ curl -fsSL \
 |---|---|
 | Installation directory | `/opt/cribbler` |
 | Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
-| Cribl connection method | Published host TCP port |
+| Cribl connection method | Auto-detected published host TCP port |
 | Cribl Syslog TCP port | `9514` |
 | Cribl TLS | Disabled |
 | Poll interval | 30 seconds |
 | Start continuous polling | No, unless the evaluator types `START` |
 
-## Cribl connection methods
+## Automatic Cribl listener detection
 
-The installer explains both choices before prompting.
+Before asking the evaluator to enter any Cribl networking information, the installer:
 
-### 1. Published host TCP port, recommended default
+1. Finds running Docker containers whose names contain `cribl`.
+2. Checks those containers for a published `9514/tcp` listener.
+3. Detects the Docker host's primary IPv4 address.
+4. Converts a wildcard mapping such as `0.0.0.0:9514` into a usable address such as `192.168.40.15:9514`.
+5. Shows the detected container, Docker mapping, and address.
+6. Asks only:
 
-Use this when the Cribl container publishes the Syslog Source port to the Docker host, for example:
+   ```text
+   Use this detected Cribl listener [Y/n]:
+   ```
+
+For a typical installation, the evaluator presses Enter. No IP address or Docker network name must be discovered manually.
+
+Example:
 
 ```text
-0.0.0.0:9514->9514/tcp
+The installer found a running Cribl container with a published Syslog listener:
+
+  Cribl container:            cribl-worker
+  Docker port mapping:        0.0.0.0:9514
+  Address the poller will use: 192.168.40.15:9514
+
+Use this detected Cribl listener [Y/n]:
 ```
 
-Enter the Docker host's LAN IP address or DNS name.
+## When detection does not find the intended listener
 
-This is the recommended default because it:
+The installer offers two alternatives only when:
 
-- Is simpler to explain and troubleshoot.
-- Does not attach the poller to Cribl's internal Docker network.
-- Does not depend on local Docker network names or aliases.
-- Works when the poller runs on the same host or another reachable test host.
+- No running `cribl*` container publishes `9514/tcp`, or
+- The evaluator rejects the detected listener.
 
-Do not enter `localhost` or `127.0.0.1`; inside the poller container those addresses refer to the poller itself.
+### 1. Different published host address and port
+
+The installer supplies its detected primary host address as the default when available. The evaluator normally needs to provide only a non-default published port.
 
 ### 2. Shared external Docker network, advanced fallback
 
-Use this when:
+Use this when Cribl does not publish the Syslog TCP port or direct container-to-container connectivity is specifically required.
 
-- Cribl does not publish the Syslog TCP port, or
-- Direct container-to-container connectivity is specifically required.
+The poller joins an existing non-production Cribl Docker network and connects using the Cribl container, service, or network-alias name. This method is less portable and gives the poller access to other services exposed on that network.
 
-The poller joins an existing non-production Cribl Docker network and connects using the Cribl container, service, or network-alias name.
-
-This method:
-
-- Depends on local Docker network names and aliases.
-- Gives the poller access to other services exposed on that network.
-- Requires the selected network to exist before installation.
-- Is less portable between customer environments.
-
-The installer lists available Docker networks and validates the selected network.
-
-**Recommendation:** press Enter for option 1 unless the Cribl Syslog TCP port is not published or the deployment specifically requires a shared Docker network.
+The installer lists available Docker networks and validates the selected one.
 
 ## What the installer asks
 
@@ -101,9 +104,8 @@ The installer prompts for:
 - Installation directory
 - Cato GraphQL endpoint
 - Numeric Cato account ID
-- Cribl connection method
-- Cribl host or Docker network and service name
-- Cribl Syslog TCP port
+- Confirmation of an automatically detected Cribl listener, when found
+- Alternative Cribl networking only when detection fails or is rejected
 - Whether Cribl TLS is enabled
 - TLS server name and CA chain when applicable
 - Polling interval
@@ -123,13 +125,14 @@ The wrapper:
 6. Creates a root-readable `.env` file.
 7. Stores the Cato API key only in `poller/secrets/cato_api_key`.
 8. Creates a new empty marker directory.
-9. Creates a Compose override when the shared-network model is selected.
-10. Builds the image with `--pull --no-cache`.
-11. Calls the poller's Cato API code without sending records or updating the marker.
-12. Opens a TCP or TLS connection to the existing Cribl Syslog Source.
-13. Optionally sends one synthetic RFC 5424 event.
-14. Records the installed commit and selected connection method in `INSTALLATION_INFO.txt`.
-15. Leaves continuous polling stopped unless the evaluator types `START` after the backlog warning.
+9. Auto-detects a published Cribl listener when possible.
+10. Creates a Compose override only when the shared-network model is selected.
+11. Builds the image with `--pull --no-cache`.
+12. Calls the poller's Cato API code without sending records or updating the marker.
+13. Opens a TCP or TLS connection to the existing Cribl Syslog Source.
+14. Optionally sends one synthetic RFC 5424 event.
+15. Records the installed commit and selected connection method in `INSTALLATION_INFO.txt`.
+16. Leaves continuous polling stopped unless the evaluator types `START` after the backlog warning.
 
 ## Supported environment overrides
 
@@ -167,7 +170,7 @@ The installer records non-secret installation metadata in:
 <install-directory>/INSTALLATION_INFO.txt
 ```
 
-Typical management commands are:
+Typical management commands:
 
 ```bash
 cd /opt/cribbler/poller
