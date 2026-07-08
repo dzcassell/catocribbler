@@ -6,7 +6,7 @@ umask 077
 readonly REPOSITORY_URL="${CATOCRIBBLER_REPOSITORY_URL:-https://github.com/dzcassell/catocribbler.git}"
 readonly DEFAULT_INSTALL_DIR="${CATOCRIBBLER_INSTALL_DIR:-/opt/cribbler}"
 readonly INSTALL_REF="${CATOCRIBBLER_REF:-main}"
-readonly DEFAULT_CATO_API_URL="${CATOCRIBBLER_CATO_API_URL:-https://api.us1.catonetworks.com/api/v1/graphql2}"
+readonly DEFAULT_CATO_API_URL="${CATOCRIBBLER_CATO_API_URL:-https://api.catonetworks.com/api/v1/graphql}"
 readonly DEFAULT_CRIBL_PORT="${CATOCRIBBLER_CRIBL_PORT:-9514}"
 readonly DEFAULT_POLL_INTERVAL="${CATOCRIBBLER_POLL_INTERVAL:-30}"
 
@@ -22,12 +22,19 @@ CRIBL_SYSLOG_SERVER_NAME=""
 CRIBL_CA_SOURCE=""
 POLL_INTERVAL_SECONDS=""
 NETWORK_MODE=""
+NETWORK_DESCRIPTION=""
 CRIBL_DOCKER_NETWORK=""
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
 }
+
+if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+  fail "An interactive terminal is required."
+fi
+
+exec 3<>/dev/tty
 
 restore_terminal() {
   stty echo <&3 2>/dev/null || true
@@ -37,12 +44,6 @@ restore_terminal() {
 trap restore_terminal EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
-  fail "An interactive terminal is required."
-fi
-
-exec 3<>/dev/tty
 
 prompt() {
   local variable_name="$1"
@@ -108,7 +109,6 @@ prompt_secret() {
   IFS= read -r response <&3
   stty echo <&3
   printf '\n' >&3
-
   printf -v "${variable_name}" '%s' "${response}"
 }
 
@@ -217,14 +217,32 @@ done
 
 cat >&3 <<'NETWORK'
 
-Cribl connection method:
-  1. Published host TCP port
-  2. Shared external Docker network
+Choose how the poller container will reach the existing Cribl Syslog Source:
+
+  1. Published host TCP port (RECOMMENDED DEFAULT)
+     Choose this when the Cribl container publishes the Syslog port to its
+     Docker host, for example: 0.0.0.0:9514->9514/tcp.
+
+     You will enter the Docker host's LAN IP address or DNS name. This is the
+     simplest and most portable method, and it does not attach the poller to
+     Cribl's internal Docker network. Do not enter localhost or 127.0.0.1.
+
+  2. Shared external Docker network (ADVANCED FALLBACK)
+     Choose this when Cribl does not publish the Syslog port, or when direct
+     container-to-container networking is specifically required.
+
+     The poller will join an existing Cribl Docker network and connect using
+     the Cribl container, service, or network-alias name. This depends on local
+     Docker network names and gives the poller access to other services exposed
+     on that network.
+
+Recommendation: press Enter for option 1 unless the Cribl Syslog TCP port is
+not published or the deployment specifically requires a shared Docker network.
 
 NETWORK
 
 while true; do
-  prompt NETWORK_MODE "Choose 1 or 2" "1"
+  prompt NETWORK_MODE "Connection method: choose 1 or 2" "1"
   case "${NETWORK_MODE}" in
     1|2)
       break
@@ -236,19 +254,33 @@ while true; do
 done
 
 if [[ "${NETWORK_MODE}" == "1" ]]; then
+  NETWORK_DESCRIPTION="Published host TCP port"
+
   while [[ -z "${CRIBL_SYSLOG_HOST}" ]]; do
-    prompt CRIBL_SYSLOG_HOST "Cribl Docker-host IP address or DNS name"
+    prompt CRIBL_SYSLOG_HOST \
+      "Cribl Docker-host LAN IP address or DNS name (not localhost)"
   done
 else
+  NETWORK_DESCRIPTION="Shared external Docker network"
+
+  printf '\nAvailable Docker networks:\n' >&3
+  docker network ls --format '  {{.Name}}' >&3
+  printf '\n' >&3
+
   while [[ -z "${CRIBL_DOCKER_NETWORK}" ]]; do
-    prompt CRIBL_DOCKER_NETWORK "Existing non-production Cribl Docker network name"
+    prompt CRIBL_DOCKER_NETWORK \
+      "Existing non-production Cribl Docker network name"
   done
+
+  [[ ! "${CRIBL_DOCKER_NETWORK}" =~ [[:space:]] ]] ||
+    fail "Docker network name cannot contain whitespace."
 
   docker network inspect "${CRIBL_DOCKER_NETWORK}" >/dev/null 2>&1 ||
     fail "Docker network does not exist: ${CRIBL_DOCKER_NETWORK}"
 
   while [[ -z "${CRIBL_SYSLOG_HOST}" ]]; do
-    prompt CRIBL_SYSLOG_HOST "Cribl container, service, or network-alias name"
+    prompt CRIBL_SYSLOG_HOST \
+      "Cribl container, service, or network-alias name"
   done
 fi
 
@@ -305,15 +337,16 @@ done
 cat >&3 <<SUMMARY
 
 Installation summary
-  Repository:       ${REPOSITORY_URL}
-  Git ref:          ${INSTALL_REF}
-  Install path:     ${INSTALL_DIR}
-  Cato API URL:     ${CATO_API_URL}
-  Cato account ID:  ${CATO_ACCOUNT_ID}
-  Cribl host:       ${CRIBL_SYSLOG_HOST}
-  Cribl port:       ${CRIBL_SYSLOG_PORT}
-  Cribl TLS:        ${CRIBL_SYSLOG_TLS}
-  Poll interval:    ${POLL_INTERVAL_SECONDS}
+  Repository:         ${REPOSITORY_URL}
+  Git ref:            ${INSTALL_REF}
+  Install path:       ${INSTALL_DIR}
+  Cato API URL:       ${CATO_API_URL}
+  Cato account ID:    ${CATO_ACCOUNT_ID}
+  Connection method:  ${NETWORK_DESCRIPTION}
+  Cribl host:         ${CRIBL_SYSLOG_HOST}
+  Cribl port:         ${CRIBL_SYSLOG_PORT}
+  Cribl TLS:          ${CRIBL_SYSLOG_TLS}
+  Poll interval:      ${POLL_INTERVAL_SECONDS}
 
 The API key is intentionally not displayed.
 SUMMARY
@@ -378,14 +411,18 @@ services:
 networks:
   cribl_existing:
     external: true
-    name: ${CRIBL_DOCKER_NETWORK}
+    name: "${CRIBL_DOCKER_NETWORK}"
 EOF
 fi
 
 chmod 0600 .env
-chown 10001:10001 secrets/cato_api_key secrets/cribl_ca.pem state
+chown 10001:10001 \
+  secrets \
+  secrets/cato_api_key \
+  secrets/cribl_ca.pem \
+  state
+chmod 0700 secrets state
 chmod 0400 secrets/cato_api_key secrets/cribl_ca.pem
-chmod 0700 state
 
 docker compose config >/dev/null
 
@@ -480,6 +517,7 @@ Installed commit: ${INSTALLED_COMMIT}
 Install directory: ${INSTALL_DIR}
 Cato API URL: ${CATO_API_URL}
 Cato account ID: ${CATO_ACCOUNT_ID}
+Connection method: ${NETWORK_DESCRIPTION}
 Cribl host: ${CRIBL_SYSLOG_HOST}
 Cribl port: ${CRIBL_SYSLOG_PORT}
 Cribl TLS: ${CRIBL_SYSLOG_TLS}
