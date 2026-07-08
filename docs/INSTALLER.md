@@ -5,62 +5,108 @@
 
 The repository includes [`install.sh`](../install.sh), an interactive wrapper for a clean demonstration installation beside an existing non-production Cribl Stream Docker deployment.
 
-The installer reads its answers directly from `/dev/tty`. This allows it to remain interactive even when the script itself is supplied to Bash through a pipe.
+The installer reads answers directly from `/dev/tty`, so its prompts remain interactive when the script is supplied to Bash through a pipe.
 
 ## Recommended customer command
 
 Download the script, inspect it, and then run it:
 
 ```bash
+INSTALL_REF=<reviewed-commit-sha>
+
 curl -fsSLo /tmp/catocribbler-install.sh \
-  https://raw.githubusercontent.com/dzcassell/catocribbler/main/install.sh
+  "https://raw.githubusercontent.com/dzcassell/catocribbler/${INSTALL_REF}/install.sh"
 
 less /tmp/catocribbler-install.sh
-sudo bash /tmp/catocribbler-install.sh
+
+sudo env \
+  CATOCRIBBLER_REF="${INSTALL_REF}" \
+  bash /tmp/catocribbler-install.sh
 ```
 
-This is safer than executing a mutable remote script without review.
+This pins both the downloaded installer and the repository checkout to the same reviewed commit.
 
-## One-line command
-
-For a direct interactive installation:
-
-```bash
-curl -fsSL \
-  https://raw.githubusercontent.com/dzcassell/catocribbler/main/install.sh \
-  | sudo bash
-```
-
-The prompts still work because the installer reads responses from `/dev/tty`, not from the pipe connected to standard input.
-
-## Reproducible pinned installation
-
-For a customer demonstration, pin both the downloaded installer and the repository checkout to a reviewed commit:
+## Direct one-line command
 
 ```bash
 INSTALL_REF=<reviewed-commit-sha>
 
 curl -fsSL \
   "https://raw.githubusercontent.com/dzcassell/catocribbler/${INSTALL_REF}/install.sh" \
-  | sudo env CATOCRIBBLER_REF="${INSTALL_REF}" bash
+  | sudo env \
+      CATOCRIBBLER_REF="${INSTALL_REF}" \
+      bash
 ```
 
-Replace `<reviewed-commit-sha>` with the commit approved for the demonstration.
+## Installer defaults
+
+| Setting | Default |
+|---|---|
+| Installation directory | `/opt/cribbler` |
+| Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
+| Cribl connection method | Published host TCP port |
+| Cribl Syslog TCP port | `9514` |
+| Cribl TLS | Disabled |
+| Poll interval | 30 seconds |
+| Start continuous polling | No, unless the evaluator types `START` |
+
+## Cribl connection methods
+
+The installer explains both choices before prompting.
+
+### 1. Published host TCP port, recommended default
+
+Use this when the Cribl container publishes the Syslog Source port to the Docker host, for example:
+
+```text
+0.0.0.0:9514->9514/tcp
+```
+
+Enter the Docker host's LAN IP address or DNS name.
+
+This is the recommended default because it:
+
+- Is simpler to explain and troubleshoot.
+- Does not attach the poller to Cribl's internal Docker network.
+- Does not depend on local Docker network names or aliases.
+- Works when the poller runs on the same host or another reachable test host.
+
+Do not enter `localhost` or `127.0.0.1`; inside the poller container those addresses refer to the poller itself.
+
+### 2. Shared external Docker network, advanced fallback
+
+Use this when:
+
+- Cribl does not publish the Syslog TCP port, or
+- Direct container-to-container connectivity is specifically required.
+
+The poller joins an existing non-production Cribl Docker network and connects using the Cribl container, service, or network-alias name.
+
+This method:
+
+- Depends on local Docker network names and aliases.
+- Gives the poller access to other services exposed on that network.
+- Requires the selected network to exist before installation.
+- Is less portable between customer environments.
+
+The installer lists available Docker networks and validates the selected network.
+
+**Recommendation:** press Enter for option 1 unless the Cribl Syslog TCP port is not published or the deployment specifically requires a shared Docker network.
 
 ## What the installer asks
 
 The installer prompts for:
 
 - Acceptance of the unsupported demonstration disclaimer
-- Installation directory, defaulting to `/opt/cribbler`
+- Installation directory
 - Cato GraphQL endpoint
 - Numeric Cato account ID
-- Cribl connection model
+- Cribl connection method
 - Cribl host or Docker network and service name
-- Cribl Syslog TCP port, defaulting to `9514`
+- Cribl Syslog TCP port
 - Whether Cribl TLS is enabled
 - TLS server name and CA chain when applicable
-- Polling interval, defaulting to 30 seconds
+- Polling interval
 - The new Cato API key, entered twice without terminal echo
 - Whether to send one synthetic Cribl event
 - Whether to start continuous EventsFeed polling
@@ -82,12 +128,10 @@ The wrapper:
 11. Calls the poller's Cato API code without sending records or updating the marker.
 12. Opens a TCP or TLS connection to the existing Cribl Syslog Source.
 13. Optionally sends one synthetic RFC 5424 event.
-14. Records the installed commit in `INSTALLATION_INFO.txt`.
+14. Records the installed commit and selected connection method in `INSTALLATION_INFO.txt`.
 15. Leaves continuous polling stopped unless the evaluator types `START` after the backlog warning.
 
 ## Supported environment overrides
-
-The command can override installer defaults:
 
 ```bash
 curl -fsSL \
@@ -95,7 +139,7 @@ curl -fsSL \
   | sudo env \
       CATOCRIBBLER_REF=main \
       CATOCRIBBLER_INSTALL_DIR=/opt/cribbler \
-      CATOCRIBBLER_CATO_API_URL=https://api.us1.catonetworks.com/api/v1/graphql2 \
+      CATOCRIBBLER_CATO_API_URL=https://api.catonetworks.com/api/v1/graphql \
       CATOCRIBBLER_CRIBL_PORT=9514 \
       CATOCRIBBLER_POLL_INTERVAL=30 \
       bash
@@ -117,7 +161,7 @@ before continuous polling begins.
 
 ## After installation
 
-The installer prints the selected paths and records non-secret installation metadata in:
+The installer records non-secret installation metadata in:
 
 ```text
 <install-directory>/INSTALLATION_INFO.txt
