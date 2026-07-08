@@ -1,8 +1,11 @@
-# Operations, upgrades, recovery, and monitoring
+# Demonstration lifecycle, backup, cleanup, and monitoring
 
-This guide covers day-to-day operation of the `cato-events-poller` after it has been integrated with an existing Cribl Stream Docker deployment.
+> [!CAUTION]
+> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This repository is not supported by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. There is no license grant, no warranty, no maintenance promise, no security-update commitment, and no obligation to assist. Do not operate this code as a production service. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 
-The poller lifecycle is separate from the Cribl lifecycle. Normal poller maintenance should not stop, recreate, upgrade, or remove the customer's Cribl containers.
+This guide describes limited lifecycle tasks for an isolated evaluation of `cato-events-poller` beside an existing non-production Cribl Stream Docker deployment.
+
+The commands are examples, not a supported runbook. Independently review every command before execution. The code may lose, duplicate, delay, expose, or replay events and may stop working without notice.
 
 Run commands from:
 
@@ -10,30 +13,32 @@ Run commands from:
 cd /opt/catocribbler/poller
 ```
 
-## 1. Normal status checks
+## 1. Demonstration status checks
 
 ```bash
 docker compose ps
 docker compose logs --tail=50 cato-events-poller
 ```
 
-Expected status:
+A running demonstration may show:
 
 ```text
 cato-events-poller   Up ...
 ```
 
-Healthy logs:
+and:
 
 ```text
 INFO starting marker_len=180
 INFO Fetched=144 Sent=144 marker_len=180
 ```
 
-## 2. Understand what the logs prove
+These messages are not a health certification.
+
+## 2. Understand what the logs do and do not prove
 
 - `Fetched`: records returned by Cato.
-- `Sent`: records successfully written to the connected Cribl TCP/TLS socket.
+- `Sent`: records written to the connected Cribl TCP/TLS socket.
 - `marker_len`: length of the current opaque Cato marker.
 
 A matching line such as:
@@ -42,27 +47,17 @@ A matching line such as:
 Fetched=144 Sent=144
 ```
 
-proves successful socket delivery of that page. It does not by itself prove that the existing Cribl Route, Pipeline, or Destination processed the records successfully.
+indicates that the demonstration poller wrote the page to the socket without reporting an exception. It does **not** prove:
 
-Operational monitoring must cover both sides:
+- Cribl parsed the RFC 5424 record correctly.
+- The Route matched.
+- The Pipeline transformed the event correctly.
+- The Destination persisted the event.
+- No duplication, loss, reordering, exposure, or downstream failure occurred.
 
-### Poller
+Validate every stage independently in the test Cribl environment.
 
-- Container running state.
-- Time since the last successful page.
-- Repeated API errors.
-- Repeated network or TLS errors.
-- Marker presence and update activity.
-
-### Existing Cribl deployment
-
-- Syslog Source connection and event counts.
-- Route match counts.
-- Pipeline parse failures.
-- Destination health.
-- Persistent queues and backpressure.
-
-## 3. Start, stop, restart, and recreate only the poller
+## 3. Start, stop, restart, and remove only the demonstration poller
 
 Start:
 
@@ -88,23 +83,23 @@ Recreate:
 docker compose up -d --force-recreate cato-events-poller
 ```
 
-Remove the poller container and its private Compose network while preserving local secrets and state:
+Remove the poller container and its private Compose network while preserving local files:
 
 ```bash
 docker compose down
 ```
 
-These commands do not operate on the customer's existing Cribl Compose project unless someone has combined the projects manually.
+These commands should not operate on the existing Cribl Compose project. Verify the active directory and Compose project name before running them, because Docker will faithfully obey mistakes with admirable efficiency.
 
-## 4. Marker management
+## 4. Marker state
 
-The marker file is:
+The demonstration marker is stored at:
 
 ```text
 state/marker.txt
 ```
 
-Check metadata without displaying the value:
+Check metadata without printing the value:
 
 ```bash
 ls -l state/marker.txt
@@ -112,34 +107,39 @@ wc -c state/marker.txt
 sha256sum state/marker.txt
 ```
 
-The poller advances the marker only after the page has been written successfully to Cribl's socket.
+The poller attempts to advance the marker after writing a page to the Cribl socket.
 
-The marker prevents unnecessary replay. Preserve it during:
+Preserve it during a controlled demonstration if you need continuity across:
 
-- Poller upgrades.
-- Host migrations.
-- Container rebuilds.
+- Image rebuilds.
+- Container recreation.
 - API-key rotation.
+- Test-host restart.
 - Changes to the Cribl connection method.
 
-Do not share one marker directory between multiple active pollers.
+Do not:
 
-## 5. Backup
+- Share one marker directory between active pollers.
+- Edit the marker manually.
+- Assume a fixed marker length.
+- Treat marker preservation as proof that no events were lost or duplicated.
 
-Back up:
+## 5. Demonstration backup
+
+Back up only what the approved test plan requires:
 
 - `.env`
 - `state/marker.txt`
 - Cribl CA chain
-- API-key reference or protected key file according to policy
+- API-key reference or protected key file
 - Git commit SHA
-- Any `compose.override.yaml` that attaches the poller to the existing Cribl network
+- `compose.override.yaml`, if used
 
 Example protected backup:
 
 ```bash
 umask 077
-BACKUP="/root/catocribbler-backup-$(date +%Y%m%d-%H%M%S)"
+BACKUP="/root/catocribbler-demo-backup-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$BACKUP"
 
 cp -a .env "$BACKUP/"
@@ -152,11 +152,13 @@ chmod -R go-rwx "$BACKUP"
 echo "Backup created: $BACKUP"
 ```
 
-Do not back up or alter the existing Cribl deployment as part of routine poller maintenance unless the change plan also modifies Cribl configuration.
+This backup can contain credentials, certificates, tenant identifiers, and event state. Protect and destroy it according to the approved test plan.
 
-## 6. Upgrade the poller code
+## 6. Evaluate a newer repository commit
 
-Review changes first:
+There is no supported upgrade path, compatibility promise, release process, or maintenance schedule.
+
+Before evaluating another commit:
 
 ```bash
 cd /opt/catocribbler
@@ -168,15 +170,15 @@ git log --oneline --decorate HEAD..origin/main
 git diff --stat HEAD..origin/main
 ```
 
-Back up marker state:
+Back up demonstration marker state if continuity matters:
 
 ```bash
 cp -a \
   poller/state/marker.txt \
-  "/root/cato-marker-before-upgrade-$(date +%Y%m%d-%H%M%S).txt"
+  "/root/cato-marker-before-demo-update-$(date +%Y%m%d-%H%M%S).txt"
 ```
 
-After approval:
+After independent review:
 
 ```bash
 git pull --ff-only
@@ -188,14 +190,11 @@ docker compose up -d --force-recreate cato-events-poller
 docker compose logs --tail=100 cato-events-poller
 ```
 
-Confirm:
+Re-run all Cato, TCP/TLS, synthetic-event, Route, Pipeline, and Destination tests. A newer commit can be less functional or less secure than the previous one.
 
-- Cato API preflight still passes.
-- Cribl TCP/TLS preflight still passes.
-- Matching `Fetched` and `Sent` counts appear.
-- Existing Cribl destination metrics continue increasing.
+## 7. Return to a previous commit
 
-## 7. Roll back poller code
+There is no supported rollback process. For an isolated demonstration, you may attempt:
 
 ```bash
 cd /opt/catocribbler
@@ -207,13 +206,13 @@ docker compose up -d --force-recreate cato-events-poller
 docker compose logs --tail=100 cato-events-poller
 ```
 
-Do not restore an older marker unless replay is intentional. Code rollback and queue-state rollback are separate decisions.
+Do not restore an older marker unless replay is intentional and approved. Code state and queue state are separate risks.
 
-## 8. Rotate the Cato API key
+## 8. Rotate the demonstration Cato API key
 
-For a production integration, use a Service API Key associated with a service principal where possible.
+Use a short-lived, minimally scoped key. Revoke it when the evaluation ends.
 
-Create and validate the replacement key before revoking the old one.
+Create and test the replacement before revoking the old key unless an exposure requires immediate revocation:
 
 ```bash
 umask 077
@@ -230,47 +229,47 @@ docker compose up -d --force-recreate cato-events-poller
 docker compose logs --tail=100 cato-events-poller
 ```
 
-Run the Cato authentication checks in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) and confirm a successful page before revoking the old key.
+Run the authentication checks in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
-## 9. Change the Cato account or API endpoint
+## 9. Change the test account or API endpoint
 
-Changing the account or endpoint changes the queue context.
+Changing the account or endpoint changes the EventsFeed context.
 
 ```dotenv
 CATO_ACCOUNT_ID=...
 CATO_API_URL=...
 ```
 
-Do not reuse the previous account's marker.
+Do not reuse the previous account's marker:
 
 ```bash
 docker compose stop cato-events-poller
-mv state/marker.txt "state/marker.previous-account.$(date +%Y%m%d-%H%M%S)"
+mv state/marker.txt "state/marker.previous-test-account.$(date +%Y%m%d-%H%M%S)"
 nano .env
 docker compose up -d cato-events-poller
 ```
 
-Expect a backlog for the new account.
+A new account can produce a large backlog. Use only a specifically approved test account.
 
-## 10. Change how the poller reaches the existing Cribl container
+## 10. Change how the poller reaches Cribl
 
-Typical reasons:
+Typical demonstration changes include:
 
-- Moving from Docker host published port to shared Docker network.
-- Changing Cribl Worker or VIP.
+- Moving between a host-published port and shared Docker test network.
+- Changing the test Worker or VIP.
 - Enabling TLS.
-- Changing the Syslog Source port.
+- Changing the test Syslog Source port.
 
-Update `.env` and, if required, `compose.override.yaml`.
+Update `.env` and, when required, `compose.override.yaml`.
 
-Then test before recreating the continuous poller:
+Then run:
 
-1. Cribl TCP preflight.
-2. Cribl TLS preflight when enabled.
-3. Synthetic syslog event.
-4. Existing Route/Pipeline/Destination delivery.
+1. TCP preflight.
+2. TLS preflight when enabled.
+3. Synthetic syslog test.
+4. Route/Pipeline/Destination validation.
 
-Only then run:
+Only then recreate the poller:
 
 ```bash
 docker compose up -d --force-recreate cato-events-poller
@@ -278,7 +277,9 @@ docker compose up -d --force-recreate cato-events-poller
 
 ## 11. Intentionally reset the marker
 
-Resetting the marker can replay the currently retained EventsFeed queue and create duplicates.
+Resetting the marker can replay retained EventsFeed records and create duplicates, volume spikes, storage usage, or downstream cost.
+
+Only do this under an approved test plan:
 
 ```bash
 docker compose stop cato-events-poller
@@ -286,9 +287,7 @@ mv state/marker.txt "state/marker.before-reset.$(date +%Y%m%d-%H%M%S)"
 docker compose up -d cato-events-poller
 ```
 
-Coordinate with Cribl and downstream owners before doing this.
-
-## 12. Verify hardening
+## 12. Inspect the demonstration container controls
 
 ```bash
 docker inspect cato-events-poller --format '
@@ -300,7 +299,7 @@ Networks={{json .NetworkSettings.Networks}}
 '
 ```
 
-Expected values include:
+Expected values may include:
 
 ```text
 User=10001
@@ -309,55 +308,64 @@ SecurityOpt=["no-new-privileges:true"]
 RestartPolicy=unless-stopped
 ```
 
-## 13. Monitoring recommendations
+These settings do not establish security, correctness, supportability, or production readiness.
 
-Alert on:
+## 13. Suggested temporary monitoring
 
-- Poller container not running.
-- No successful poll within an expected time window.
-- Consecutive HTTP 401, 403, 422, or 429 responses.
-- DNS, connection, or TLS errors.
+During a supervised demonstration, watch:
+
+- Poller container state and restarts.
+- Time since the last reported successful page.
+- HTTP 401, 403, 422, and 429 responses.
+- DNS, TCP, and TLS errors.
 - Repeated full 3,000-record pages.
-- Marker missing or state directory unwritable.
-- Existing Cribl Source receiving no events while Cato reports non-zero fetched counts.
-- Route or Pipeline error increases.
-- Destination backpressure or persistent queue growth.
+- Marker presence and directory permissions.
+- Cribl Source event counts.
+- Route and Pipeline errors.
+- Test Destination queues, storage, and backpressure.
 - API-key expiration.
-- Cribl TLS certificate expiration.
+- Test certificate expiration.
+- Unexpected access to the shared Docker network.
+
+Monitoring suggestions do not create a support or maintenance obligation.
 
 ## 14. Troubleshooting
 
-Use [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) as the primary diagnostic guide.
+Use [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) for demonstration diagnostics, including:
 
-It contains separate procedures for:
-
-- Creating Admin and Service API Keys.
+- Creating restricted Admin and Service API Keys.
 - Authenticating directly to the Cato endpoint.
 - Interpreting Cato HTTP errors.
-- Discovering existing Cribl Docker ports and networks.
-- Testing host-published-port and shared-network connectivity.
-- Testing TLS.
+- Discovering Cribl Docker ports and networks.
+- Testing TCP and TLS.
 - Sending a synthetic event.
 - Validating Source, Route, Pipeline, and Destination stages.
 - Repairing secret and marker permissions.
-- Collecting safe diagnostics.
+- Collecting diagnostics without intentionally exposing secrets.
 
-## 15. Decommission the poller
+## 15. End the demonstration
 
-Stop and remove only the poller:
+Stop and remove the poller:
 
 ```bash
 cd /opt/catocribbler/poller
 docker compose down
 ```
 
-Archive the marker and approved configuration according to policy, then remove or revoke the Cato key.
+Then:
 
-Do not remove the existing Cribl containers or their data volumes as part of poller decommissioning.
+- Revoke the Cato API key.
+- Remove a demonstration-only service principal.
+- Remove test Cribl Source, Route, Pipeline, and Destination objects when no longer required.
+- Remove the poller from external Docker networks.
+- Destroy local keys, certificates, backups, and test data according to policy.
+- Remove the repository clone if no longer required.
+- Confirm that no production systems were altered.
 
-## Related documentation
+## No support, maintenance, license, or warranty
 
-- [`INSTALL.md`](INSTALL.md): installation beside existing Cribl containers.
-- [`CRIBL.md`](CRIBL.md): existing Cribl integration.
-- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md): full diagnostic procedures.
-- [`../SECURITY.md`](../SECURITY.md): security guidance.
+No person or organization is obligated to maintain this repository, publish updates, answer questions, investigate defects, issue security notices, or assist with cleanup or incidents.
+
+There is no license grant from the author. All material is provided “AS IS” and “AS AVAILABLE,” without warranties and without liability to the maximum extent permitted by law.
+
+Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
