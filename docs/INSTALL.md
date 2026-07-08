@@ -1,20 +1,33 @@
-# Installation and Cato tenant configuration
+# Install the Cato poller beside an existing Cribl Docker deployment
 
-This guide installs the `cato-events-poller` container and configures it to retrieve EventsFeed records from one Cato tenant and send them to a Cribl Stream Syslog Source.
+This guide installs only the `cato-events-poller` container.
+
+It assumes Cribl Stream is already running in Docker and that the customer will integrate this poller with an existing Cribl Worker or single-instance container.
+
+The procedure is:
+
+1. Inspect the existing Cribl deployment.
+2. Create and validate a Cato API key.
+3. Choose Docker networking between the poller and Cribl.
+4. Configure the poller.
+5. Test Cato and Cribl independently.
+6. Start continuous polling.
+7. Validate routing and destination delivery in Cribl.
 
 ## 1. Prerequisites
 
 You need:
 
-- A Linux host with outbound HTTPS access to the tenant's Cato API endpoint.
-- Network access from the Docker host to the Cribl Stream Syslog Source.
-- Docker Engine.
-- Docker Compose v2, invoked as `docker compose`.
+- Linux host access with Docker privileges.
+- Docker Engine and Docker Compose v2.
 - Git.
-- A Cato administrator who can enable EventsFeed and create an API key.
-- A Cribl administrator who can configure a Syslog Source, Route, Pipeline, and Destination.
+- An existing Cribl Stream Docker deployment.
+- Cribl administrative access for the correct Worker Group or single instance.
+- Cato administrative access to create an API key or assistance from a Cato administrator.
+- Outbound HTTPS access to the correct Cato API endpoint.
+- Network access from the poller container to the existing Cribl Syslog Source.
 
-Verify the local tools:
+Verify local tools:
 
 ```bash
 docker version
@@ -22,107 +35,214 @@ docker compose version
 git --version
 ```
 
-## 2. Collect the required Cato tenant values
+## 2. Inspect the existing Cribl containers
 
-The deployment requires three tenant-specific Cato values:
+List the running containers:
 
-1. Cato API URL
-2. Cato account ID
-3. Cato API key
-
-### 2.1 Confirm that EventsFeed is enabled
-
-The Cato tenant must have EventsFeed enabled. The exact management-screen names can vary as the Cato Management Application changes, so confirm with the tenant administrator that:
-
-- EventsFeed is enabled for the target account.
-- Events are entering the feed.
-- The API key is permitted to read EventsFeed data.
-
-If EventsFeed is not enabled or the key lacks access, the container cannot retrieve logs regardless of how enthusiastically Docker reports that it is running.
-
-### 2.2 Obtain the Cato account ID
-
-`CATO_ACCOUNT_ID` is the numeric account identifier used by the Cato API. It is not the tenant display name.
-
-Common places to find it include:
-
-- The account identifier shown in the Cato Management Application URL while the target tenant is selected.
-- Cato API tooling or API Explorer output.
-- Existing Cato API scripts or integrations for the same tenant.
-- The tenant's API-management information.
-
-Record only the numeric value. Example:
-
-```text
-12345
+```bash
+docker ps \
+  --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-Do not include brackets, quotation marks, or labels in `.env`.
+Identify the container that receives data:
 
-### 2.3 Create a Cato API key
+- **Single-instance deployment:** the single Cribl container.
+- **Distributed deployment:** a Worker container, load balancer, or VIP serving the target Worker Group.
+- Do not aim syslog at the Leader management port unless the Leader is also deliberately operating as the data-processing node.
 
-In the Cato Management Application, open the tenant's API-management area and create a service API key for this integration.
+Set the selected container name for inspection:
 
-Recommended settings:
-
-- Use a descriptive name, such as `cribl-eventsfeed-poller`.
-- Grant only the permissions required to read EventsFeed data for the target account.
-- Restrict allowed source IP addresses when the tenant's API-key controls support it.
-- Set an expiration and rotation process that matches organizational policy.
-- Store the key in an approved password vault or secret-management platform.
-
-The API key is placed in a file named:
-
-```text
-poller/secrets/cato_api_key
+```bash
+CRIBL_CONTAINER=cribl-worker
 ```
 
-It is deliberately not placed in `.env`, the Dockerfile, or the image.
+Inspect its networks and published ports:
 
-### 2.4 Determine the correct Cato API URL
+```bash
+docker inspect "$CRIBL_CONTAINER" \
+  --format 'Name={{.Name}}
+Networks={{json .NetworkSettings.Networks}}
+Ports={{json .NetworkSettings.Ports}}'
 
-`CATO_API_URL` must be the GraphQL endpoint assigned to the tenant's region.
+docker port "$CRIBL_CONTAINER"
+```
 
-Example for a US1 tenant:
+Record:
+
+- Cribl container or service name.
+- Docker network name.
+- Published Syslog TCP port, if any.
+- Worker Group receiving the configuration.
+- Destination used for validation.
+
+## 3. Choose how the poller reaches Cribl
+
+### Option A: Existing Cribl container publishes the Syslog port
+
+Example Docker port mapping:
+
+```text
+9514/tcp -> 0.0.0.0:9514
+```
+
+Use the Docker host's LAN IP or DNS name:
+
+```dotenv
+CRIBL_SYSLOG_HOST=192.0.2.25
+CRIBL_SYSLOG_PORT=9514
+```
+
+Do not use `localhost` or `127.0.0.1` in `.env`. Inside the poller container, those addresses point back to the poller itself.
+
+### Option B: Attach the poller to the existing Cribl Docker network
+
+Discover the network:
+
+```bash
+docker inspect "$CRIBL_CONTAINER" \
+  --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}'
+```
+
+After cloning the repository, create `poller/compose.override.yaml`:
+
+```yaml
+services:
+  cato-events-poller:
+    networks:
+      - cribl_existing
+
+networks:
+  cribl_existing:
+    external: true
+    name: <actual-existing-cribl-network-name>
+```
+
+Use the Cribl service name, container name, or network alias:
+
+```dotenv
+CRIBL_SYSLOG_HOST=cribl-worker
+CRIBL_SYSLOG_PORT=9514
+```
+
+The name resolves only when the poller and Cribl are on the same user-defined Docker network.
+
+## 4. Confirm the existing Cribl Syslog Source
+
+In Cribl Stream, open the single instance or target Worker Group.
+
+Confirm or create a Syslog Source with:
+
+| Setting | Required value |
+|---|---|
+| Protocol | TCP, or TCP with TLS |
+| Address | `0.0.0.0` unless a deliberate narrower bind is required |
+| TCP port | Commonly `9514` |
+| Enabled | Yes |
+| Deployed | Yes |
+
+Current Cribl versions include a preconfigured Syslog Source on port `9514`, but it must be enabled and committed/deployed.
+
+The repository Route does not require a specific Source ID. It matches any Cribl Syslog Source when the RFC 5424 application name is `cato-events`.
+
+See [`CRIBL.md`](CRIBL.md) for the complete Source, Route, Pipeline, and Destination procedure.
+
+## 5. Collect the required Cato values
+
+You need:
+
+- `CATO_API_URL`
+- `CATO_ACCOUNT_ID`
+- Cato API key
+
+### Cato API URL
+
+Use the endpoint assigned to the tenant. Example:
 
 ```text
 https://api.us1.catonetworks.com/api/v1/graphql2
 ```
 
-Some Cato examples and tenants use:
+Some tenants or Cato examples use:
 
 ```text
 https://api.catonetworks.com/api/v1/graphql2
 ```
 
-Use the exact endpoint appropriate for the target tenant. Do not infer the region from geography alone. Reuse the endpoint from a known-working integration or confirm it with the tenant administrator.
+Do not guess the regional hostname from geography.
 
-## 3. Prepare Cribl first
+### Cato account ID
 
-Before starting the poller, configure the Cribl side so the destination is ready to accept events.
+Use the numeric account identifier, not the display name.
 
-At minimum, create:
+Example:
 
-- A Syslog Source that listens on TCP or TLS.
-- A Route matching `appname === 'cato-events'`.
-- The supplied `cato_normalize` Pipeline.
-- A validation or production Destination.
+```text
+12345
+```
 
-See [`CRIBL.md`](CRIBL.md) for the full procedure.
+## 6. Create a Cato API key
 
-Record these values:
+Cato separates personal Admin API Keys from Service API Keys.
 
-- Cribl listener hostname or IP address
-- Listener TCP port
-- Whether TLS is enabled
-- TLS server name, if applicable
-- CA certificate chain used to validate the Cribl certificate
+### Admin API Key for testing
 
-The hostname must be reachable from inside the Docker container. If Cribl runs on the same physical host but outside this Compose project, use a host address that the container can reach, such as the Docker host's LAN address. Do not use `127.0.0.1` unless Cribl is running inside the same container, which it should not be.
+1. In the Cato Management Application, go to **Resources > Admin API Keys**.
+2. Select **New**.
+3. Enter a descriptive name such as `cribl-eventsfeed-test`.
+4. Select **Downgrade to View** because EventsFeed is a read-only query operation.
+5. Optionally restrict allowed source IP addresses to the Docker host's public egress IP.
+6. Set an expiration date according to policy.
+7. Apply the configuration.
+8. Copy the key immediately. Cato does not display it again after the dialog closes.
 
-## 4. Clone the repository
+The key inherits the administrator's RBAC permissions and stops working if that administrator is disabled or deleted.
 
-Choose a protected deployment directory. The examples use `/opt/catocribbler`.
+### Service API Key for production
+
+A long-running shared integration should normally use a service principal.
+
+Create the service principal:
+
+1. Go to **Account > Administrators**.
+2. Select **New**.
+3. Select **Create New** and **Create as Service Principal**.
+4. Enter a descriptive name such as `Cribl EventsFeed Poller`.
+5. Assign the minimum role and account scope required for EventsFeed queries.
+6. Apply the configuration.
+
+Create the key:
+
+1. Go to **Resources > Service API Keys**.
+2. Select **New**.
+3. Select the service principal.
+4. Enter a descriptive key name.
+5. Select **Downgrade to View**.
+6. Optionally restrict allowed source IP addresses.
+7. Set an expiration date.
+8. Apply the configuration.
+9. Copy the key immediately and store it securely.
+
+The poller authenticates using:
+
+```text
+x-api-key: <api-key>
+```
+
+## 7. Authenticate directly to Cato before installing the poller
+
+Use the direct API test in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#7-authenticate-directly-to-the-cato-api-endpoint).
+
+Do not proceed until the result is:
+
+```text
+CATO API AUTHENTICATION PASS
+```
+
+This isolates Cato endpoint, account ID, RBAC, IP restrictions, and key validity before Docker and Cribl are added to the equation.
+
+## 8. Clone the repository
+
+Choose a protected deployment path:
 
 ```bash
 sudo -i
@@ -131,77 +251,70 @@ git clone https://github.com/dzcassell/catocribbler.git
 cd /opt/catocribbler/poller
 ```
 
-For a reproducible production deployment, check out an approved commit or release rather than following an unreviewed moving branch:
+Record the deployed commit:
 
 ```bash
 git rev-parse HEAD
 ```
 
-Record that commit in the change ticket.
+For production, deploy an approved commit or release rather than silently following an unreviewed moving branch.
 
-## 5. Create the runtime directories
-
-From `poller/`:
+## 9. Create runtime directories
 
 ```bash
 umask 077
 mkdir -p secrets state
-```
-
-The container runs as UID `10001`. That UID must be able to read the local secret source files and create and atomically replace the marker file.
-
-```bash
 chown 10001 secrets state
 chmod 0700 secrets state
 ```
 
-The host may display an unexpected group name on `state/marker.txt` after the container writes it. Numeric UID ownership and successful marker updates are what matter.
+The container runs as UID `10001`.
 
-## 6. Store the Cato API key
+That UID must be able to:
 
-The safest simple interactive method avoids putting the key in shell history:
+- Read the API-key source file.
+- Read the Cribl CA file when TLS is used.
+- Create and atomically replace the marker file in `state/`.
+
+## 10. Store the API key
+
+Avoid shell-history exposure:
 
 ```bash
 umask 077
-read -rsp "Cato API key: " CATO_KEY
+read -rsp 'Cato API key: ' CATO_KEY
 printf '%s' "$CATO_KEY" > secrets/cato_api_key
 unset CATO_KEY
 printf '\n'
+
 chown 10001 secrets/cato_api_key
 chmod 0400 secrets/cato_api_key
 ```
 
-Confirm that the file exists without displaying its contents:
+Verify without displaying the key:
 
 ```bash
-test -s secrets/cato_api_key && echo "Cato API key file: present"
-wc -c secrets/cato_api_key
+test -s secrets/cato_api_key && echo 'Cato API key file: present'
 stat -c 'owner_uid=%u mode=%a path=%n' secrets/cato_api_key
 ```
 
-Expected ownership is UID `10001`, with mode `400`.
+Expected owner UID is `10001` and mode is `400`.
 
-Do not run `cat secrets/cato_api_key` in a recorded terminal session.
+## 11. Configure the Cribl CA file
 
-A production secret-management system may write the same file during deployment instead of using the interactive method, but it must preserve equivalent ownership and permissions for this local Compose deployment.
+The supplied Compose file declares the CA file as a secret, so the source file must exist.
 
-## 7. Configure the Cribl CA file
-
-The supplied Compose file declares a `cribl_ca` secret, so the source file must exist in both TLS and non-TLS deployments.
-
-### TLS deployment
-
-Copy the PEM-encoded CA certificate or CA chain that validates the Cribl Syslog Source certificate:
+### TLS
 
 ```bash
-install -m 0400 -o 10001 /path/to/cribl-ca-chain.pem secrets/cribl_ca.pem
+install \
+  -m 0400 \
+  -o 10001 \
+  /path/to/cribl-ca-chain.pem \
+  secrets/cribl_ca.pem
 ```
 
-The certificate's server name must match `CRIBL_SYSLOG_SERVER_NAME`.
-
-### Non-TLS lab deployment
-
-Create an empty placeholder and disable TLS in `.env`:
+### Non-TLS lab listener
 
 ```bash
 : > secrets/cribl_ca.pem
@@ -209,43 +322,17 @@ chown 10001 secrets/cribl_ca.pem
 chmod 0400 secrets/cribl_ca.pem
 ```
 
-Plain TCP is appropriate only on a trusted lab network. Use TLS for production traffic.
+Use non-TLS only on a trusted lab network.
 
-## 8. Create and edit `.env`
-
-Copy the template:
+## 12. Configure `.env`
 
 ```bash
 cp .env.example .env
 chmod 0600 .env
-```
-
-Edit it with a local editor:
-
-```bash
 nano .env
 ```
 
-Example TLS configuration:
-
-```dotenv
-CATO_API_URL=https://api.us1.catonetworks.com/api/v1/graphql2
-CATO_ACCOUNT_ID=12345
-CATO_API_KEY_FILE=/run/secrets/cato_api_key
-
-CRIBL_SYSLOG_HOST=cribl-worker.example.com
-CRIBL_SYSLOG_PORT=9514
-CRIBL_SYSLOG_TLS=true
-CRIBL_SYSLOG_SERVER_NAME=cribl-worker.example.com
-CRIBL_SYSLOG_CA_FILE=/run/secrets/cribl_ca.pem
-
-POLL_INTERVAL_SECONDS=30
-STATE_FILE=/state/marker.txt
-LOG_LEVEL=INFO
-SYSLOG_HOSTNAME=cato-events-poller
-```
-
-Example non-TLS lab configuration:
+Example using a Cribl host-published port:
 
 ```dotenv
 CATO_API_URL=https://api.us1.catonetworks.com/api/v1/graphql2
@@ -264,28 +351,26 @@ LOG_LEVEL=INFO
 SYSLOG_HOSTNAME=cato-events-poller
 ```
 
-### Configuration reference
+Example using a shared external Docker network and TLS:
 
-| Variable | Required | Purpose |
-|---|---:|---|
-| `CATO_API_URL` | Yes | Full Cato GraphQL endpoint, including `/api/v1/graphql2`. |
-| `CATO_ACCOUNT_ID` | Yes | Numeric Cato account ID for the tenant being polled. |
-| `CATO_API_KEY_FILE` | Yes | In-container path to the API-key secret. Leave as `/run/secrets/cato_api_key` with the supplied Compose file. |
-| `CRIBL_SYSLOG_HOST` | Yes | DNS name or IP address reachable from the container. |
-| `CRIBL_SYSLOG_PORT` | No | Cribl TCP listener port. Default is `9514`. |
-| `CRIBL_SYSLOG_TLS` | No | `true` or `false`. Default is `true`. |
-| `CRIBL_SYSLOG_SERVER_NAME` | No | TLS certificate server name. Defaults to `CRIBL_SYSLOG_HOST`. |
-| `CRIBL_SYSLOG_CA_FILE` | No | In-container CA file used for TLS validation. Normally `/run/secrets/cribl_ca.pem`. |
-| `POLL_INTERVAL_SECONDS` | No | Delay after a non-full EventsFeed page. Default is `30`. |
-| `STATE_FILE` | No | Marker path inside the container. Leave as `/state/marker.txt`. |
-| `LOG_LEVEL` | No | Python log level, normally `INFO`. |
-| `SYSLOG_HOSTNAME` | No | Hostname written into the RFC 5424 message. Default is `cato-events-poller`. |
+```dotenv
+CATO_API_URL=https://api.us1.catonetworks.com/api/v1/graphql2
+CATO_ACCOUNT_ID=12345
+CATO_API_KEY_FILE=/run/secrets/cato_api_key
 
-The file-path variables are container paths, not host paths.
+CRIBL_SYSLOG_HOST=cribl-worker
+CRIBL_SYSLOG_PORT=9514
+CRIBL_SYSLOG_TLS=true
+CRIBL_SYSLOG_SERVER_NAME=cribl-worker.example.com
+CRIBL_SYSLOG_CA_FILE=/run/secrets/cribl_ca.pem
 
-## 9. Validate the deployment files
+POLL_INTERVAL_SECONDS=30
+STATE_FILE=/state/marker.txt
+LOG_LEVEL=INFO
+SYSLOG_HOSTNAME=cato-events-poller
+```
 
-Check that required files exist and the API key is readable by UID `10001`:
+## 13. Validate files and Compose
 
 ```bash
 for file in .env secrets/cato_api_key secrets/cribl_ca.pem; do
@@ -293,31 +378,29 @@ for file in .env secrets/cato_api_key secrets/cribl_ca.pem; do
 done
 
 test -s secrets/cato_api_key || {
-  echo "The Cato API key file is empty"
+  echo 'The Cato API key file is empty'
   exit 1
 }
 
 sudo -u '#10001' test -r secrets/cato_api_key || {
-  echo "UID 10001 cannot read secrets/cato_api_key"
+  echo 'UID 10001 cannot read secrets/cato_api_key'
   exit 1
 }
-```
 
-Validate the effective Compose configuration:
-
-```bash
 docker compose config
 ```
 
-This command should complete without printing the API key.
-
-## 10. Optional non-destructive API preflight
-
-The preflight calls Cato and decodes one page, but it does not send events to Cribl and does not update the marker:
+## 14. Build the poller image
 
 ```bash
 docker compose build --pull
+```
 
+Building the poller does not stop, restart, or replace the customer's existing Cribl containers.
+
+## 15. Run the non-destructive Cato container preflight
+
+```bash
 docker compose run \
   --rm \
   --no-deps \
@@ -347,17 +430,9 @@ if fetched != len(events):
 '
 ```
 
-A successful preflight looks like:
+This does not send events to Cribl and does not update the marker.
 
-```text
-CATO API PREFLIGHT PASS fetched=250 decoded=250 current_marker_len=180 returned_marker_len=180
-```
-
-A first-run preflight with an empty marker may return 3,000 events because that is a full EventsFeed page.
-
-## 11. Optional Cribl TCP preflight
-
-Test network connectivity without sending an event:
+## 16. Test poller-to-Cribl TCP connectivity
 
 ```bash
 docker compose run \
@@ -372,33 +447,36 @@ import socket
 host = os.environ["CRIBL_SYSLOG_HOST"]
 port = int(os.environ.get("CRIBL_SYSLOG_PORT", "9514"))
 
+print(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
 with socket.create_connection((host, port), timeout=5):
     print(f"CRIBL TCP PREFLIGHT PASS host={host} port={port}")
 '
 ```
 
-This verifies only that a TCP connection can be established. It does not validate TLS, Cribl routing, or destination delivery.
+For TLS, also run the TLS preflight in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#12-test-cribl-tls-from-the-poller-container).
 
-## 12. Start the poller
+## 17. Configure the existing Cribl environment
+
+Before starting continuous polling:
+
+1. Enable or create the Syslog TCP Source.
+2. Add the `cato_normalize` Pipeline from `cribl/pipelines/cato_normalize/conf.yml`.
+3. Add the Route from `cribl/routes/cato_events_route.yml`.
+4. Replace `cato_file_output` with the customer's validation or production Destination.
+5. Commit and deploy the changes to the target Worker Group.
+6. Send the synthetic event from [`CRIBL.md`](CRIBL.md).
+
+Do not create a second Cribl stack for this project. Integrate these objects into the existing environment.
+
+## 18. Start continuous polling
 
 ```bash
-docker compose build --pull
 docker compose up -d
-```
-
-Check status:
-
-```bash
 docker compose ps
-```
-
-Follow the logs:
-
-```bash
 docker compose logs -f cato-events-poller
 ```
 
-Healthy startup and polling look like:
+Healthy startup:
 
 ```text
 INFO starting marker_len=0
@@ -406,89 +484,60 @@ INFO Fetched=3000 Sent=3000 marker_len=180
 INFO Fetched=425 Sent=425 marker_len=180
 ```
 
-The poller does not sleep after a full 3,000-event page. It immediately requests the next page until the backlog is drained.
+A full 3,000-record page is drained immediately. The normal polling delay begins after a smaller page.
 
-## 13. Validate the marker
-
-After the first successful page, confirm that the marker exists:
+## 19. Validate the marker
 
 ```bash
 ls -l state/marker.txt
 wc -c state/marker.txt
 ```
 
-The marker is an opaque Cato value. Do not edit it. Its size can change between API versions or tenants.
+The marker is opaque. Do not edit it or assume a fixed length.
 
-## 14. Validate in Cribl
+## 20. Validate end to end in Cribl
 
-Confirm all of the following:
+Confirm:
 
-- The Syslog Source receives connections and events.
-- The Route matches `appname === 'cato-events'`.
-- The `cato_normalize` Pipeline parses the JSON payload.
-- Expected Cato fields are promoted to top-level fields.
-- The selected Destination receives the same events.
+- The existing Syslog Source receives the connection.
+- Source metrics increase.
+- Live Capture shows `appname=cato-events`.
+- The Cato Route matches.
+- `cato_normalize` promotes the JSON fields.
+- The chosen Destination receives the events.
+- Destination queues are healthy.
 
-See [`CRIBL.md`](CRIBL.md).
+A poller log such as `Fetched=144 Sent=144` proves successful socket writes, not complete downstream delivery.
 
-## 15. Install as an automatically restarting service
+## 21. Migrating from another poller
 
-The Compose file uses:
-
-```yaml
-restart: unless-stopped
-```
-
-Docker will restart the container after a process failure or host reboot, provided the Docker service itself starts normally.
-
-Verify Docker startup on systemd hosts:
-
-```bash
-systemctl is-enabled docker
-systemctl status docker --no-pager
-```
-
-## 16. Protect the deployment directory
-
-The deployment directory contains sensitive runtime material. Recommended host permissions:
-
-```bash
-chown 10001 /opt/catocribbler/poller/secrets/cato_api_key
-chown 10001 /opt/catocribbler/poller/secrets/cribl_ca.pem
-chown 10001 /opt/catocribbler/poller/state
-
-chmod 0700 /opt/catocribbler/poller
-chmod 0600 /opt/catocribbler/poller/.env
-chmod 0400 /opt/catocribbler/poller/secrets/cato_api_key
-chmod 0400 /opt/catocribbler/poller/secrets/cribl_ca.pem
-chmod 0700 /opt/catocribbler/poller/state
-```
-
-Do not loosen permissions merely to make casual non-root inspection more convenient. Use an administrative account for deployment management.
-
-## 17. Migrating from another poller
-
-To avoid replaying events:
+To avoid replay:
 
 1. Stop the old poller.
 2. Copy its current Cato marker to `poller/state/marker.txt`.
-3. Make the file and directory writable by UID `10001`.
+3. Assign ownership to UID `10001`.
 4. Start this poller.
-5. Confirm `Fetched=N Sent=N` before removing the old integration.
+5. Confirm matching `Fetched` and `Sent` counts.
+6. Validate Cribl destination delivery.
+7. Remove the old poller only after successful validation.
 
 Example:
 
 ```bash
-docker compose down
-install -m 0600 -o 10001 /path/to/existing-marker.txt state/marker.txt
-chown 10001 state
+install \
+  -m 0600 \
+  -o 10001 \
+  /path/to/existing-marker.txt \
+  state/marker.txt
+
 docker compose up -d
 ```
 
-Never run two pollers against the same tenant and marker state unless duplicate delivery and marker races are intentional.
+Never run two independent pollers against the same account and marker state unless duplicate delivery is intentional.
 
-## Next steps
+## Related guides
 
-- Configure Cribl using [`CRIBL.md`](CRIBL.md).
-- Learn upgrades and recovery procedures in [`OPERATIONS.md`](OPERATIONS.md).
-- Review [`../SECURITY.md`](../SECURITY.md) before production deployment.
+- [`CRIBL.md`](CRIBL.md): configure the existing Cribl deployment.
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md): API authentication, Docker networking, TLS, routing, and diagnostic commands.
+- [`OPERATIONS.md`](OPERATIONS.md): upgrades, backup, recovery, and monitoring.
+- [`../SECURITY.md`](../SECURITY.md): credential and deployment security.
