@@ -1,41 +1,56 @@
-# Troubleshooting Cato EventsFeed to an existing Cribl Docker deployment
+# Troubleshooting the unsupported Cato-to-Cribl demonstration
 
-This project assumes that **Cribl Stream is already running in Docker** and that the customer is adding the `cato-events-poller` container beside it.
+> [!CAUTION]
+> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This troubleshooting material is not a support service, supported runbook, official integration guide, or assurance that the code can be made safe or reliable. Damon Cassell, Cato Networks, Cribl, employers, contributors, vendors, partners, and all other parties provide no support, warranty, maintenance, incident response, or obligation to help. There is no license grant from the author. Do not troubleshoot this code in production because it should not be there. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 
-The poller does not install, upgrade, replace, or manage the existing Cribl deployment. It only:
+This project assumes Cribl Stream is already running in Docker and an evaluator is adding `cato-events-poller` in an isolated, disposable, non-production environment.
 
-1. Authenticates to the Cato GraphQL API.
-2. Retrieves EventsFeed records for one Cato account.
-3. Sends those records to an existing Cribl Syslog Source over TCP or TLS.
+The poller attempts to:
 
-Troubleshoot the integration in that order. Do not begin by changing Cribl routes when the API key cannot authenticate, and do not regenerate Cato keys when the real problem is that two Docker networks cannot see each other. Humans already invented enough unnecessary variables.
+1. Authenticate to the Cato GraphQL API.
+2. Retrieve EventsFeed records for one approved test account.
+3. Send RFC 5424 records to an existing non-production Cribl Syslog Source.
 
-## 1. Fast triage flow
+Troubleshoot in that order. Do not rearrange Cribl routes when the Cato key cannot authenticate, and do not regenerate API keys when the real problem is that two Docker networks cannot see each other. Computers are literal enough without additional human improvisation.
+
+## 1. Stop if the environment is production
+
+Do not continue if any of the following are true:
+
+- The Cato account contains production data and has not been explicitly approved for this test.
+- The Cribl Worker Group, Source, Route table, Pipeline, or Destination is production.
+- The downstream Destination triggers production alerting, automation, billing, retention, or compliance workflows.
+- The Docker host or shared network is production.
+- The test can expose API keys, certificates, event data, or internal network information.
+- There is no rollback, cleanup, key-revocation, and data-destruction plan.
+
+Move the demonstration to an isolated environment before proceeding.
+
+## 2. Fast triage flow
 
 Use this sequence:
 
-1. Confirm the poller container starts.
-2. Confirm the Cato API key and account ID authenticate directly to the configured Cato endpoint.
-3. Confirm the poller container can open a TCP connection to the existing Cribl listener.
-4. Confirm the Cribl Syslog Source is enabled, listening, and deployed.
-5. Confirm the Cribl Route matches `appname === 'cato-events'`.
-6. Confirm the `cato_normalize` Pipeline runs.
-7. Confirm the selected Cribl Destination receives events.
+1. Confirm the demonstration container can start.
+2. Confirm the Cato key and account ID authenticate directly to the configured endpoint.
+3. Confirm the poller container can resolve and connect to the test Cribl listener.
+4. Confirm TLS when enabled.
+5. Confirm the test Syslog Source is enabled and deployed.
+6. Send a synthetic event.
+7. Confirm the Route matches `appname === 'cato-events'`.
+8. Confirm `cato_normalize` runs.
+9. Confirm the isolated test Destination receives the event.
+10. Start EventsFeed polling only after the preceding tests pass.
 
-The first failing step identifies the layer to fix.
+The first failing step identifies the layer to investigate. None of these checks establishes production readiness.
 
-## 2. Confirm the existing Cribl Docker environment
-
-Before changing anything, identify the running Cribl containers, published ports, and Docker networks.
+## 3. Inspect the existing non-production Cribl Docker environment
 
 ```bash
 docker ps \
   --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-Identify the Cribl Worker or single-instance container that will receive syslog. The Leader management container is normally not the syslog target in a distributed deployment.
-
-Inspect the selected Cribl container:
+Identify the test Worker or single-instance container that receives data. A Leader management port is normally not the syslog target in a distributed deployment.
 
 ```bash
 CRIBL_CONTAINER=cribl-worker
@@ -45,59 +60,43 @@ docker inspect "$CRIBL_CONTAINER" \
 Image={{.Config.Image}}
 Networks={{json .NetworkSettings.Networks}}
 PublishedPorts={{json .NetworkSettings.Ports}}'
-```
 
-Check Docker's published-port view:
-
-```bash
 docker port "$CRIBL_CONTAINER"
 ```
 
-Typical published output might include:
+If no TCP port is published for the test Syslog Source, use a shared test Docker network or add an approved test-only mapping. Do not alter production Docker mappings for this demonstration.
 
-```text
-9514/tcp -> 0.0.0.0:9514
-```
+## 4. Choose the Docker connectivity model
 
-If no TCP port is published for the Syslog Source, the poller cannot reach it through the Docker host unless both containers share a Docker network.
+### Host-published test port
 
-## 3. Choose the Docker connectivity model
-
-There are two supported approaches.
-
-### Model A: Connect through a port published on the Docker host
-
-Use this when the existing Cribl container publishes the Syslog TCP port, for example:
+Use this when the test Cribl container publishes a mapping such as:
 
 ```text
 0.0.0.0:9514->9514/tcp
 ```
 
-Set:
+Configure:
 
 ```dotenv
-CRIBL_SYSLOG_HOST=<docker-host-lan-ip-or-dns-name>
+CRIBL_SYSLOG_HOST=<docker-test-host-ip-or-dns-name>
 CRIBL_SYSLOG_PORT=9514
 ```
 
-Do not use `127.0.0.1` or `localhost` in the poller container. Inside the poller, those addresses refer to the poller container itself, not the Docker host and not the Cribl container.
+Do not use `127.0.0.1` or `localhost`; inside the poller container those addresses refer to the poller itself.
 
-Confirm the host is listening:
+Confirm the test host is listening:
 
 ```bash
 ss -lnt | grep ':9514 '
 ```
 
-Then test from the poller container using the TCP preflight in this document.
+### Shared external test network
 
-### Model B: Put the poller on the existing Cribl Docker network
-
-Use this when the customer prefers container-to-container communication without publishing the syslog port externally.
-
-Discover the Cribl network name:
+Discover the Cribl network:
 
 ```bash
-docker inspect cribl-worker \
+docker inspect "$CRIBL_CONTAINER" \
   --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}'
 ```
 
@@ -112,91 +111,52 @@ services:
 networks:
   cribl_existing:
     external: true
-    name: <actual-cribl-docker-network-name>
+    name: <actual-non-production-cribl-network-name>
 ```
 
-Then set `CRIBL_SYSLOG_HOST` to the Cribl container name, Compose service name, or another DNS alias that resolves on that shared Docker network:
+Configure:
 
 ```dotenv
 CRIBL_SYSLOG_HOST=cribl-worker
 CRIBL_SYSLOG_PORT=9514
 ```
 
-Validate name resolution from the poller image:
+Attaching the poller to an external network grants access to whatever that network exposes. Do not attach it to production or unrelated networks.
 
-```bash
-cd /opt/catocribbler/poller
-
-docker compose run \
-  --rm \
-  --no-deps \
-  --entrypoint python \
-  cato-events-poller \
-  -c '
-import os
-import socket
-
-host = os.environ["CRIBL_SYSLOG_HOST"]
-print(host, socket.getaddrinfo(host, None))
-'
-```
-
-If the name does not resolve, the containers are not on the same user-defined Docker network or the selected name is not a network alias.
-
-## 4. Create the correct Cato API key
-
-Cato currently provides two API-key models.
+## 5. Create a restricted Cato API key for testing
 
 ### Admin API Key
 
-An Admin API Key is tied to the individual Cato Management Application administrator who creates it. It is useful for personal testing and administrator-owned workflows.
+An Admin API Key is tied to the individual administrator who creates it.
 
-To create one:
+For a controlled short test:
 
-1. Sign in to the Cato Management Application.
-2. Go to **Resources > Admin API Keys**.
-3. Select **New**.
-4. Enter a descriptive name such as `cribl-eventsfeed-test`.
-5. Select **Downgrade to View** because this integration performs read-only query operations.
-6. Optionally restrict **Allow access from IPs** to the Docker host's public egress IP address or approved range.
-7. Set an expiration date according to policy.
-8. Select **Apply**.
-9. Copy the key immediately and store it securely. Cato does not show the value again after the creation dialog closes.
-
-An Admin API Key inherits the administrator's RBAC permissions. If that administrator is disabled or deleted, the key stops working.
-
-### Service API Key, recommended for production
-
-A long-running container integration should normally use a Service API Key associated with a service principal rather than a human administrator.
-
-Create the service principal:
-
-1. Go to **Account > Administrators**.
+1. Go to **Resources > Admin API Keys**.
 2. Select **New**.
-3. Select **Create New** and **Create as Service Principal**.
-4. Enter a descriptive name such as `Cribl EventsFeed Poller`.
-5. Assign the minimum role and scope required to query EventsFeed for the intended account.
-6. Apply the configuration.
+3. Use a descriptive demonstration name.
+4. Select **Downgrade to View**.
+5. Restrict allowed source IPs where practical.
+6. Set a short expiration.
+7. Apply the configuration.
+8. Copy the key immediately and store it securely.
 
-Create the key:
+The key can stop working if the administrator is disabled, deleted, or re-scoped.
 
-1. Go to **Resources > Service API Keys**.
-2. Select **New**.
-3. Select the service principal.
-4. Enter a descriptive key name.
-5. Select **Downgrade to View** for this read-only integration.
-6. Optionally restrict allowed source IP addresses.
-7. Set an expiration date according to policy.
-8. Apply the configuration.
-9. Copy the key immediately and store it securely.
+### Service API Key
 
-The poller authenticates by sending the key in the HTTP header:
+A Service API Key can avoid tying a shared test to a human account, but it does not make this code supported or production-ready.
+
+Create a service principal under **Account > Administrators**, assign only the minimum test-account scope, then create the key under **Resources > Service API Keys** with view-only access, source-IP restrictions, and a short expiration.
+
+Revoke the key and remove a demonstration-only principal when testing ends.
+
+The poller sends:
 
 ```text
 x-api-key: <api-key>
 ```
 
-## 5. Verify the Cato API URL and account ID
+## 6. Verify the Cato endpoint and account ID
 
 Required values:
 
@@ -205,34 +165,27 @@ CATO_API_URL=https://api.<tenant-region>.catonetworks.com/api/v1/graphql2
 CATO_ACCOUNT_ID=<numeric-account-id>
 ```
 
-The account ID is numeric and is not the tenant display name.
+The account ID is numeric and is not the display name.
 
-Do not guess the regional API hostname from geography. Use the endpoint assigned to the tenant or reuse an endpoint from a known-working Cato integration.
-
-Examples that may be valid depending on the tenant:
+Do not guess the regional endpoint. Examples that may apply to some tenants include:
 
 ```text
 https://api.us1.catonetworks.com/api/v1/graphql2
 https://api.catonetworks.com/api/v1/graphql2
 ```
 
-## 6. Test DNS and TLS to the Cato endpoint
+Use only the endpoint assigned to the approved test account.
 
-Extract the hostname from `.env`:
+## 7. Test DNS and TLS to Cato
 
 ```bash
 cd /opt/catocribbler/poller
 CATO_HOST="$(sed -n 's#^CATO_API_URL=https://\([^/]*\)/.*#\1#p' .env)"
 printf 'Cato host: %s\n' "$CATO_HOST"
-```
-
-Test DNS:
-
-```bash
 getent ahosts "$CATO_HOST"
 ```
 
-Test TCP and TLS:
+Test TLS:
 
 ```bash
 openssl s_client \
@@ -241,13 +194,11 @@ openssl s_client \
   </dev/null
 ```
 
-A DNS failure, TCP timeout, proxy block, or certificate error must be fixed before API-key troubleshooting is meaningful.
+Fix DNS, routing, proxy, TLS inspection, clock, or certificate problems before API-key troubleshooting.
 
-## 7. Authenticate directly to the Cato API endpoint
+## 8. Authenticate directly to the Cato API endpoint
 
-This direct test uses the configured endpoint and account ID, sends a minimal EventsFeed query, and prints only status and error information. It does not update the local marker or send records to Cribl.
-
-Run from the Docker host:
+This test queries Cato but does not send to Cribl or update the local marker. It can still retrieve sensitive account information into memory and terminal output. Use only the approved test account.
 
 ```bash
 cd /opt/catocribbler/poller
@@ -294,7 +245,7 @@ request = urllib.request.Request(
     headers={
         'Content-Type': 'application/json',
         'x-api-key': api_key,
-        'User-Agent': 'catocribbler-auth-test',
+        'User-Agent': 'catocribbler-demonstration-auth-test',
     },
     method='POST',
 )
@@ -304,20 +255,18 @@ try:
         payload = json.loads(response.read().decode('utf-8'))
         print(f'HTTP status: {response.status}')
         if payload.get('errors'):
-            print('GraphQL errors:')
             print(json.dumps(payload['errors'], indent=2))
             raise SystemExit(1)
 
         result = payload['data']['eventsFeed']
         print(f"Fetched count: {result.get('fetchedCount')}")
-        account_errors = [
+        errors = [
             account.get('errorString')
             for account in result.get('accounts') or []
             if account.get('errorString')
         ]
-        if account_errors:
-            print('Account errors:')
-            print(json.dumps(account_errors, indent=2))
+        if errors:
+            print(json.dumps(errors, indent=2))
             raise SystemExit(1)
 
         print('CATO API AUTHENTICATION PASS')
@@ -330,7 +279,7 @@ PY
 unset CATO_API_KEY
 ```
 
-Expected result:
+Expected test result:
 
 ```text
 HTTP status: 200
@@ -338,73 +287,61 @@ Fetched count: <number>
 CATO API AUTHENTICATION PASS
 ```
 
-## 8. Interpret Cato authentication failures
+## 9. Interpret Cato failures
 
 ### HTTP 401
 
-Common causes:
+Possible causes:
 
-- Key value is incorrect, truncated, expired, or revoked.
-- A newline or extra character was written into the key file.
-- The `x-api-key` header is missing.
+- Incorrect, truncated, expired, or revoked key.
+- Extra newline or character in the key file.
+- Missing `x-api-key` header.
 
-Check the local key file without printing it:
+Check without printing the key:
 
 ```bash
 wc -c secrets/cato_api_key
 od -An -t x1 secrets/cato_api_key | tail -n 1
 ```
 
-Regenerate the key if there is any doubt. Do not paste it into tickets or chat.
-
 ### HTTP 403
 
-Common causes:
+Possible causes:
 
-- The key lacks permission for the account or EventsFeed query.
-- The key's source-IP restriction excludes the Docker host's public egress IP.
-- The key belongs to a different Cato account.
-- The associated admin or service principal was disabled.
-
-Confirm the host's public egress IP using the customer's approved network method and compare it with the Cato key's allowed-IP setting.
+- Insufficient account or query permission.
+- Source-IP restriction excludes the test host's public egress IP.
+- Key belongs to another account.
+- Associated administrator or service principal is disabled.
 
 ### HTTP 404
 
-Common causes:
+Possible causes:
 
 - Incorrect hostname.
-- Missing `/api/v1/graphql2` path.
+- Missing `/api/v1/graphql2`.
 - Wrong regional endpoint.
-- HTTP proxy or security service rewriting the request.
+- Proxy or security device rewriting the request.
 
 ### HTTP 422
 
-Common causes:
+Possible causes:
 
 - Malformed GraphQL query.
-- Invalid account-ID value.
-- API schema mismatch.
-- Request variables rejected by the selected endpoint.
+- Invalid account ID.
+- Schema mismatch.
+- Variables rejected by the endpoint.
 
-Read the response body. It usually contains the specific GraphQL validation error.
+Review the response body carefully and redact it before sharing.
 
 ### HTTP 429
 
-The API is rate-limiting the client. Reduce parallel pollers, avoid multiple integrations polling the same tenant unnecessarily, and honor the retry interval.
+The API is rate-limiting the test. Stop duplicate pollers and reduce test frequency.
 
 ### TLS verification error
 
-Check:
+Check system time, CA trust, proxy settings, TLS inspection, and the regional hostname.
 
-- Host system date and time.
-- Enterprise TLS inspection.
-- Trusted CA bundle.
-- Correct regional hostname.
-- Proxy environment variables.
-
-## 9. Run the poller's non-destructive Cato preflight
-
-After the direct test passes, validate the actual container configuration:
+## 10. Run the demonstration container's Cato preflight
 
 ```bash
 cd /opt/catocribbler/poller
@@ -440,29 +377,22 @@ if fetched != len(events):
 '
 ```
 
-If the direct host test passes but this container test fails, compare:
+If the host test passes but this fails, compare `.env`, file permissions, container DNS, proxy variables, Docker egress policy, and CA trust.
 
-- `.env` values
-- mounted key-file ownership and permissions
-- container DNS and proxy settings
-- Docker egress policy
+## 11. Confirm the test Cribl Syslog Source
 
-## 10. Confirm the Cribl Syslog Source in the existing environment
+In the non-production Cribl Worker Group or single instance, confirm the Source:
 
-In Cribl Stream, open the Worker Group or single instance that receives data.
-
-Confirm the Syslog Source:
-
+- Is explicitly approved for the demonstration.
 - Is enabled.
 - Listens on TCP, not only UDP.
-- Uses the expected port, commonly `9514`.
-- Listens on `0.0.0.0` or another address reachable in the container.
-- Has TLS enabled only when the poller is configured for TLS.
-- Has been saved, committed, and deployed to the active Worker Group.
+- Uses the expected test port.
+- Listens on a reachable address.
+- Has TLS enabled only when the poller uses TLS.
+- Is saved, committed, and deployed.
+- Routes only to an isolated test Destination.
 
-Current Cribl versions include a preconfigured Syslog Source on port `9514`, but it still must be enabled and deployed before it receives traffic.
-
-## 11. Test TCP connectivity from the poller container
+## 12. Test TCP from the poller container
 
 ```bash
 cd /opt/catocribbler/poller
@@ -478,7 +408,6 @@ import socket
 
 host = os.environ["CRIBL_SYSLOG_HOST"]
 port = int(os.environ.get("CRIBL_SYSLOG_PORT", "9514"))
-
 addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
 print(f"Resolved addresses: {addresses}")
 
@@ -487,29 +416,27 @@ with socket.create_connection((host, port), timeout=5):
 '
 ```
 
-### Name resolution failure
+### Name-resolution failure
 
-- Shared-network model: containers are not attached to the same Docker network or the hostname is not a valid network alias.
-- Host-published-port model: the configured host DNS name does not resolve inside Docker.
+- Shared-network model: containers are not attached to the same test network or the name is not a valid alias.
+- Host-port model: configured DNS does not resolve inside Docker.
 
 ### Connection refused
 
-- Cribl Source is disabled.
+- Test Source disabled.
 - Wrong TCP port.
-- Docker did not publish the port.
-- Cribl is listening only on localhost inside its container.
-- The listener is configured for UDP only.
+- Port not published.
+- Listener bound only to localhost inside Cribl.
+- Source configured for UDP only.
 
 ### Connection timeout
 
 - Firewall drop.
-- Wrong IP address.
-- Docker routing problem.
-- Load balancer or network ACL issue.
+- Wrong address.
+- Docker routing issue.
+- Network ACL or load-balancer problem.
 
-## 12. Test Cribl TLS from the poller container
-
-For a TLS listener:
+## 13. Test Cribl TLS
 
 ```bash
 cd /opt/catocribbler/poller
@@ -538,64 +465,64 @@ with socket.create_connection((host, port), timeout=5) as raw:
 '
 ```
 
-If this fails:
+Check port, certificate SAN, CA chain, expiration, and whether the Source incorrectly requires a client certificate.
 
-- Confirm Cribl TLS is enabled on that exact TCP port.
-- Confirm the CA chain in `secrets/cribl_ca.pem` validates the Cribl certificate.
-- Confirm `CRIBL_SYSLOG_SERVER_NAME` matches a certificate SAN.
-- Confirm no middlebox is replacing the certificate.
-
-## 13. Send a synthetic event to the existing Cribl source
-
-This validates Cribl without calling Cato.
+## 14. Send a synthetic test event
 
 Plain TCP example:
 
 ```bash
 printf '<134>1 2026-01-01T00:00:00.000Z test-host cato-events - - - {"time":1767225600000,"event_type":"Synthetic Test","vendor":"cato","product":"cato_sase"}\n' \
-  | nc <cribl-host> 9514
+  | nc <cribl-test-host> 9514
 ```
 
-Then confirm in Cribl that the event:
+Confirm:
 
-- Appears at the Syslog Source.
-- Has `appname=cato-events`.
-- Matches the Cato Route.
-- Passes through `cato_normalize`.
-- Reaches the selected Destination.
+- Test Source receives it.
+- `appname=cato-events`.
+- Demonstration Route matches.
+- Demonstration Pipeline runs.
+- Isolated test Destination receives it.
 
-If the source receives the event but the route does not match, inspect the actual `__inputId` and route order.
+## 15. Route compatibility
 
-## 14. Route compatibility with an existing Cribl source
-
-The repository Route matches any Cribl Syslog Source when the RFC 5424 application name is `cato-events`:
+The supplied demonstration filter is:
 
 ```javascript
 __inputId.startsWith('syslog:') && appname === 'cato-events'
 ```
 
-This avoids assuming the customer's existing Source ID is exactly `in_syslog` or `in_syslog_default`.
+This avoids assuming a specific Source ID. It can still match unintended events if another sender uses the same `appname`. Review Route scope and order in the test environment.
 
-Place the Cato Route above broad catch-all routes that might consume the same syslog event first.
+## 16. Interpret poller logs
 
-## 15. Poller log interpretation
-
-### Healthy
+### Apparently successful socket write
 
 ```text
-INFO starting marker_len=180
 INFO Fetched=144 Sent=144 marker_len=180
 ```
 
-### Healthy with no new events
+This does not prove downstream delivery or correctness.
+
+### No new test events
 
 ```text
 INFO Fetched=0 Sent=0 marker_len=180
 ```
 
-### Cato works, Cribl connection fails
+### Cato failure
 
-Typical traceback includes:
+Typical errors include:
+
+```text
+Cato API HTTP 401
+Cato API HTTP 403
+Cato API HTTP 422
+```
+
+### Network or TLS failure
+
+Typical exceptions include:
 
 ```text
 ConnectionRefusedError
@@ -604,29 +531,9 @@ socket.gaierror
 ssl.SSLCertVerificationError
 ```
 
-Fix Docker networking, listener configuration, or TLS.
-
-### Cato authentication fails
-
-Typical traceback includes:
-
-```text
-Cato API HTTP 401
-Cato API HTTP 403
-Cato API HTTP 422
-```
-
-Use the direct authentication test and inspect the response body.
-
-### `Fetched` and `Sent` do not match
-
-The page should be treated as failed. The marker should not advance. Review the full traceback and Cribl connection state.
-
-## 16. Secret-file and state permissions
+## 17. Secret and state permissions
 
 The container runs as UID `10001`.
-
-Check:
 
 ```bash
 cd /opt/catocribbler/poller
@@ -637,7 +544,7 @@ stat -c 'uid=%u gid=%g mode=%a path=%n' \
   state
 ```
 
-Recommended values:
+Suggested demonstration values:
 
 - API key file: owner UID `10001`, mode `400`
 - CA file: owner UID `10001`, mode `400`
@@ -656,41 +563,9 @@ if test -e state/marker.txt; then
 fi
 ```
 
-The state directory must be writable because marker updates use atomic file replacement.
+## 18. Collect limited diagnostics
 
-## 17. Verify the running poller and marker
-
-```bash
-cd /opt/catocribbler/poller
-
-docker compose ps
-docker compose logs --tail=100 cato-events-poller
-ls -l state/marker.txt
-wc -c state/marker.txt
-```
-
-The marker length is not guaranteed to be 180 bytes. It is opaque and must not be edited manually.
-
-## 18. Distinguish socket delivery from Cribl destination delivery
-
-A log line such as:
-
-```text
-Fetched=144 Sent=144
-```
-
-means the poller wrote 144 syslog records successfully to the connected TCP socket. It does not by itself prove that:
-
-- The Cribl Route matched.
-- The Pipeline parsed the payload.
-- The downstream Destination accepted the event.
-- A destination persistent queue is healthy.
-
-Confirm each stage in Cribl metrics, Live Capture, Route preview, Pipeline preview, and Destination metrics.
-
-## 19. Collect safe diagnostics
-
-These commands avoid printing the API key or full marker:
+These commands avoid intentionally printing the API key or marker value, but output can still contain sensitive hostnames, addresses, tenant identifiers, and error details:
 
 ```bash
 cd /opt/catocribbler/poller
@@ -715,32 +590,39 @@ printf '\n=== Marker metadata ===\n'
 wc -c state/marker.txt 2>/dev/null || true
 sha256sum state/marker.txt 2>/dev/null || true
 
-printf '\n=== Existing Cribl containers ===\n'
+printf '\n=== Cribl containers ===\n'
 docker ps \
   --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' \
   | grep -E 'NAMES|cribl' || true
 ```
 
-Before sharing diagnostics, redact:
+Redact before sharing:
 
 - Account IDs
-- Internal hostnames and IP addresses
+- Internal hostnames and addresses
 - Event payloads
 - API error bodies containing tenant details
 - Marker values
 - Certificates
 - API keys
 
-## 20. Known-good end-to-end state
+There is no support recipient for these diagnostics. They are for the evaluator's own investigation.
 
-The integration is healthy when all of the following are true:
+## 19. End the test instead of escalating it into production
 
-- Direct Cato authentication test passes.
-- Container Cato preflight passes.
-- Poller-to-Cribl TCP or TLS preflight passes.
-- Existing Cribl Syslog Source receives the synthetic test.
-- Cato Route matches `appname=cato-events`.
-- `cato_normalize` promotes JSON fields.
-- Destination metrics increase.
-- Poller logs repeatedly show matching `Fetched` and `Sent` counts.
-- Marker file exists and changes over time when new events arrive.
+The demonstration is complete when the evaluator has observed the intended data flow in an isolated environment. It should then be removed, not promoted.
+
+```bash
+cd /opt/catocribbler/poller
+docker compose down
+```
+
+Revoke the Cato key, remove demonstration Cribl objects, detach the external network, and destroy test secrets and data according to policy.
+
+## No support, license, warranty, or liability
+
+No person or organization is obligated to help troubleshoot this code. Cato Networks and Cribl support organizations are not responsible for it. Damon Cassell and repository contributors provide no support commitment.
+
+The repository intentionally contains no license grant from the author. All material is provided “AS IS” and “AS AVAILABLE,” with no warranties and no liability to the maximum extent permitted by applicable law.
+
+Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
