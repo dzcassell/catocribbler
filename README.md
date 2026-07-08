@@ -7,6 +7,36 @@ This repository contains experimental demonstration code showing one possible wa
 
 Its presence on GitHub does not make it production-ready, supported, endorsed, licensed, safe, complete, or suitable for any purpose. Apparently repositories do not arrive with warning sirens, so this paragraph must perform the task.
 
+## Interactive installer
+
+The repository includes an interactive [`install.sh`](install.sh) wrapper. It prompts for the installation path, Cato account information, Cribl connection method, TLS settings, polling interval, and the API key. The default installation directory is:
+
+```text
+/opt/cribbler
+```
+
+Recommended reviewable installation:
+
+```bash
+curl -fsSLo /tmp/catocribbler-install.sh \
+  https://raw.githubusercontent.com/dzcassell/catocribbler/main/install.sh
+
+less /tmp/catocribbler-install.sh
+sudo bash /tmp/catocribbler-install.sh
+```
+
+Direct one-line installation:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/dzcassell/catocribbler/main/install.sh \
+  | sudo bash
+```
+
+The installer reads answers from `/dev/tty`, so its prompts remain interactive when Bash receives the script through a pipe. It builds the image, runs independent Cato and Cribl preflights, can send one synthetic event, and leaves continuous polling stopped unless the evaluator explicitly types `START` after the backlog warning.
+
+For a customer demonstration, pin both the downloaded installer and repository checkout to a reviewed commit. See [`docs/INSTALLER.md`](docs/INSTALLER.md).
+
 ## Project assumption
 
 This project does **not** install, upgrade, replace, or manage Cribl Stream.
@@ -134,13 +164,15 @@ These controls are demonstration safeguards, not proof of security, correctness,
 ## Repository contents
 
 - [`DISCLAIMER.md`](DISCLAIMER.md): full unsupported-code, no-license, no-warranty, and limitation-of-liability notice.
+- [`install.sh`](install.sh): interactive installer for a fresh non-production demonstration deployment.
 - [`poller/poller.py`](poller/poller.py): experimental EventsFeed polling, normalization, marker handling, and syslog delivery.
 - [`poller/Dockerfile`](poller/Dockerfile): demonstration Python image running as UID `10001`.
 - [`poller/compose.yaml`](poller/compose.yaml): standalone demonstration poller deployment.
 - [`poller/.env.example`](poller/.env.example): configuration template for an isolated evaluation.
 - [`cribl/pipelines/cato_normalize/conf.yml`](cribl/pipelines/cato_normalize/conf.yml): demonstration Cribl normalization Pipeline.
 - [`cribl/routes/cato_events_route.yml`](cribl/routes/cato_events_route.yml): demonstration Route compatible with any Syslog Source ID when `appname=cato-events`.
-- [`docs/INSTALL.md`](docs/INSTALL.md): non-production installation beside an existing Cribl Docker environment.
+- [`docs/INSTALLER.md`](docs/INSTALLER.md): interactive installer launch methods, prompts, safeguards, and overrides.
+- [`docs/INSTALL.md`](docs/INSTALL.md): non-production manual installation beside an existing Cribl Docker environment.
 - [`docs/CRIBL.md`](docs/CRIBL.md): demonstration integration with the existing Cribl container and configuration.
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md): Cato authentication, Docker networking, Cribl, TLS, routing, and permissions troubleshooting.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md): limited demonstration lifecycle, backup, cleanup, and monitoring guidance.
@@ -168,40 +200,9 @@ Collect these values before testing:
 - Isolated test Destination ID.
 - TLS server name and CA chain when TLS is enabled.
 
-## Abbreviated demonstration setup
+## Manual demonstration setup
 
-Read [`DISCLAIMER.md`](DISCLAIMER.md) and the full installation guide before doing anything. Use only an isolated, disposable, non-production environment.
-
-```bash
-git clone https://github.com/dzcassell/catocribbler.git
-cd catocribbler/poller
-
-cp .env.example .env
-mkdir -p secrets state
-nano .env
-
-umask 077
-read -rsp "Cato API key: " CATO_KEY
-printf '%s' "$CATO_KEY" > secrets/cato_api_key
-unset CATO_KEY
-printf '\n'
-
-# Replace with the CA chain for a TLS test Source.
-# Keep an empty placeholder only for an isolated non-TLS lab listener.
-: > secrets/cribl_ca.pem
-
-chown 10001 secrets/cato_api_key secrets/cribl_ca.pem state
-chmod 0400 secrets/cato_api_key secrets/cribl_ca.pem
-chmod 0700 state
-
-docker compose config
-docker compose build --pull
-
-# Run the documented non-destructive preflights before continuous polling.
-
-docker compose up -d
-docker compose logs -f cato-events-poller
-```
+The interactive installer is preferred for a repeatable demonstration. A manual installation remains documented in [`docs/INSTALL.md`](docs/INSTALL.md).
 
 A successful demonstration cycle may look like:
 
