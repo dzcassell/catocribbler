@@ -148,11 +148,11 @@ umask 077
 mkdir -p secrets state
 ```
 
-The container runs as UID `10001` and must be able to create and atomically replace the marker file:
+The container runs as UID `10001`. That UID must be able to read the local secret source files and create and atomically replace the marker file.
 
 ```bash
-chown 10001 state
-chmod 0700 state
+chown 10001 secrets state
+chmod 0700 secrets state
 ```
 
 The host may display an unexpected group name on `state/marker.txt` after the container writes it. Numeric UID ownership and successful marker updates are what matter.
@@ -167,6 +167,7 @@ read -rsp "Cato API key: " CATO_KEY
 printf '%s' "$CATO_KEY" > secrets/cato_api_key
 unset CATO_KEY
 printf '\n'
+chown 10001 secrets/cato_api_key
 chmod 0400 secrets/cato_api_key
 ```
 
@@ -175,11 +176,14 @@ Confirm that the file exists without displaying its contents:
 ```bash
 test -s secrets/cato_api_key && echo "Cato API key file: present"
 wc -c secrets/cato_api_key
+stat -c 'owner_uid=%u mode=%a path=%n' secrets/cato_api_key
 ```
+
+Expected ownership is UID `10001`, with mode `400`.
 
 Do not run `cat secrets/cato_api_key` in a recorded terminal session.
 
-A production secret-management system may write the same file during deployment instead of using the interactive method.
+A production secret-management system may write the same file during deployment instead of using the interactive method, but it must preserve equivalent ownership and permissions for this local Compose deployment.
 
 ## 7. Configure the Cribl CA file
 
@@ -190,7 +194,7 @@ The supplied Compose file declares a `cribl_ca` secret, so the source file must 
 Copy the PEM-encoded CA certificate or CA chain that validates the Cribl Syslog Source certificate:
 
 ```bash
-install -m 0400 /path/to/cribl-ca-chain.pem secrets/cribl_ca.pem
+install -m 0400 -o 10001 /path/to/cribl-ca-chain.pem secrets/cribl_ca.pem
 ```
 
 The certificate's server name must match `CRIBL_SYSLOG_SERVER_NAME`.
@@ -201,6 +205,7 @@ Create an empty placeholder and disable TLS in `.env`:
 
 ```bash
 : > secrets/cribl_ca.pem
+chown 10001 secrets/cribl_ca.pem
 chmod 0400 secrets/cribl_ca.pem
 ```
 
@@ -280,7 +285,7 @@ The file-path variables are container paths, not host paths.
 
 ## 9. Validate the deployment files
 
-Check that required files exist:
+Check that required files exist and the API key is readable by UID `10001`:
 
 ```bash
 for file in .env secrets/cato_api_key secrets/cribl_ca.pem; do
@@ -291,6 +296,11 @@ test -s secrets/cato_api_key || {
   echo "The Cato API key file is empty"
   exit 1
 }
+
+sudo -u '#10001' test -r secrets/cato_api_key || {
+  echo "UID 10001 cannot read secrets/cato_api_key"
+  exit 1
+}
 ```
 
 Validate the effective Compose configuration:
@@ -299,7 +309,7 @@ Validate the effective Compose configuration:
 docker compose config
 ```
 
-This command should complete without printing secrets.
+This command should complete without printing the API key.
 
 ## 10. Optional non-destructive API preflight
 
@@ -443,10 +453,15 @@ systemctl status docker --no-pager
 The deployment directory contains sensitive runtime material. Recommended host permissions:
 
 ```bash
+chown 10001 /opt/catocribbler/poller/secrets/cato_api_key
+chown 10001 /opt/catocribbler/poller/secrets/cribl_ca.pem
+chown 10001 /opt/catocribbler/poller/state
+
 chmod 0700 /opt/catocribbler/poller
 chmod 0600 /opt/catocribbler/poller/.env
 chmod 0400 /opt/catocribbler/poller/secrets/cato_api_key
 chmod 0400 /opt/catocribbler/poller/secrets/cribl_ca.pem
+chmod 0700 /opt/catocribbler/poller/state
 ```
 
 Do not loosen permissions merely to make casual non-root inspection more convenient. Use an administrative account for deployment management.
@@ -466,6 +481,7 @@ Example:
 ```bash
 docker compose down
 install -m 0600 -o 10001 /path/to/existing-marker.txt state/marker.txt
+chown 10001 state
 docker compose up -d
 ```
 
