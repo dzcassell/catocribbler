@@ -55,11 +55,17 @@ The in-container path is:
 /run/secrets/cato_api_key
 ```
 
-## Local file permissions
+## Local file ownership and permissions
 
-Recommended permissions:
+The container runs as UID `10001`. With the supplied local Docker Compose deployment, that UID must be able to read the host files used as secret sources and must be able to create and atomically replace files in `state/`.
+
+Recommended ownership and permissions:
 
 ```bash
+chown 10001 /opt/catocribbler/poller/secrets/cato_api_key
+chown 10001 /opt/catocribbler/poller/secrets/cribl_ca.pem
+chown 10001 /opt/catocribbler/poller/state
+
 chmod 0700 /opt/catocribbler/poller
 chmod 0600 /opt/catocribbler/poller/.env
 chmod 0400 /opt/catocribbler/poller/secrets/cato_api_key
@@ -67,7 +73,9 @@ chmod 0400 /opt/catocribbler/poller/secrets/cribl_ca.pem
 chmod 0700 /opt/catocribbler/poller/state
 ```
 
-The state directory must remain writable by container UID `10001` because marker updates use atomic file replacement.
+Do not make the API key world-readable merely to satisfy the container. Assign ownership to UID `10001` and retain restrictive modes.
+
+The state directory must remain writable by UID `10001` because marker updates use atomic file replacement.
 
 ## Network security
 
@@ -139,7 +147,7 @@ If a Cato API key is exposed:
 
 1. Revoke or disable the exposed key in Cato.
 2. Create a replacement key with minimum required permissions.
-3. Replace `poller/secrets/cato_api_key`.
+3. Replace `poller/secrets/cato_api_key` with a file owned by UID `10001` and mode `0400`.
 4. Recreate the container.
 5. Review Cato API activity and relevant security logs.
 6. Remove the secret from Git history, tickets, chat, or logs where possible.
