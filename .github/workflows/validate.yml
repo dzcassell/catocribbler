@@ -1,0 +1,33 @@
+name: Validate demonstration files
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate installer shell syntax
+        run: bash -n install.sh
+
+      - name: Compile poller Python
+        run: python3 -m py_compile poller/poller.py
+
+      - name: Validate Docker Compose configuration
+        working-directory: poller
+        run: |
+          cp .env.example .env
+          mkdir -p secrets state
+          : > secrets/cato_api_key
+          : > secrets/cribl_ca.pem
+          docker compose config >/dev/null
