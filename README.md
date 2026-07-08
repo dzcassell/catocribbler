@@ -17,7 +17,7 @@ Current defaults:
 |---|---|
 | Installation directory | `/opt/cribbler` |
 | Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
-| Cribl connection method | Published host TCP port |
+| Cribl connection method | Auto-detected published host TCP port |
 | Cribl Syslog TCP port | `9514` |
 | Cribl TLS | Disabled |
 | Poll interval | 30 seconds |
@@ -40,6 +40,26 @@ sudo env \
 The installer reads answers from `/dev/tty`, so prompts remain interactive when Bash receives the script through a pipe. It builds the image, runs independent Cato and Cribl preflights, can send one synthetic event, and leaves continuous polling stopped unless the evaluator explicitly types `START` after the backlog warning.
 
 See [`docs/INSTALLER.md`](docs/INSTALLER.md) and [`docs/INSTALL.md`](docs/INSTALL.md).
+
+## Automatic Cribl listener detection
+
+Before asking for any Cribl host address, the installer checks running `cribl*` containers for a published `9514/tcp` listener and detects the Docker host's primary IPv4 address.
+
+A typical result is:
+
+```text
+The installer found a running Cribl container with a published Syslog listener:
+
+  Cribl container:            cribl-worker
+  Docker port mapping:        0.0.0.0:9514
+  Address the poller will use: 192.168.40.15:9514
+
+Use this detected Cribl listener [Y/n]:
+```
+
+For a normal installation, the evaluator presses Enter. No IP address, port, Docker network name, or container alias must be discovered manually.
+
+Alternative published-host or shared-Docker-network prompts appear only when detection fails or the evaluator rejects the detected listener.
 
 ## Project assumption
 
@@ -75,24 +95,16 @@ The container:
 
 ## Cribl connection methods
 
-### Published host TCP port, recommended default
+### Auto-detected published host TCP port, recommended default
 
-Use this when the Cribl container publishes the Syslog Source port to the Docker host:
+When a running Cribl container publishes `9514/tcp`, the installer resolves the mapping automatically and asks the evaluator to confirm it.
 
-```text
-0.0.0.0:9514->9514/tcp
-```
-
-Configure the poller with the Docker host's LAN IP address or DNS name.
-
-This is the recommended default because it:
+This is the preferred model because it:
 
 - Is simpler to explain and troubleshoot.
 - Does not attach the poller to Cribl's internal Docker network.
 - Does not depend on local Docker network names and aliases.
 - Is more portable between customer environments.
-
-Do not use `localhost` or `127.0.0.1`; inside the poller container those addresses refer to the poller itself.
 
 ### Shared external Docker network, advanced fallback
 
@@ -101,8 +113,6 @@ Use this only when the Syslog TCP port is not published or direct container-to-c
 The poller joins an existing non-production Cribl Docker network and connects using the Cribl container, service, or network-alias name.
 
 This method is less portable and gives the poller access to other services exposed on that network.
-
-**Recommendation:** choose the published host TCP port unless the listener is not published or the deployment specifically requires a shared Docker network.
 
 ## Cato API-key choice
 
