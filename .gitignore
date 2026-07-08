@@ -8,6 +8,10 @@
 *.pfx
 secrets/
 
+# Installer-generated local configuration
+INSTALLATION_INFO.txt
+compose.override.yaml
+
 # Local state and logs
 marker.txt
 state/
