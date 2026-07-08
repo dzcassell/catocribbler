@@ -7,15 +7,20 @@ This guide describes a fresh installation of the experimental `cato-events-polle
 
 The preferred installation method is the interactive [`install.sh`](../install.sh) wrapper. It creates the selected directory, writes fresh local configuration, stores the Cato key as a Docker secret source file, builds the image, runs independent Cato and Cribl preflights, optionally sends a synthetic event, and leaves continuous polling stopped until the evaluator explicitly types `START`.
 
-The default installation directory is:
+## 1. Defaults
 
-```text
-/opt/cribbler
-```
+| Setting | Default |
+|---|---|
+| Installation directory | `/opt/cribbler` |
+| Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
+| Cribl connection method | Published host TCP port |
+| Cribl Syslog TCP port | `9514` |
+| Cribl TLS | Disabled |
+| Poll interval | 30 seconds |
 
-## 1. Preconditions
+## 2. Preconditions
 
-Before installing, confirm all of the following:
+Before installing, confirm:
 
 - The host is an isolated non-production Linux system.
 - Docker Engine is installed and running.
@@ -24,8 +29,8 @@ Before installing, confirm all of the following:
 - Cribl Stream is already running in Docker.
 - A non-production Cribl Worker or single-instance container can receive TCP syslog.
 - The test Syslog Source is enabled, committed, and deployed.
-- The selected test Destination is isolated from production analytics, automation, retention, and alerting.
-- The Cato account and EventsFeed data are approved for this demonstration.
+- The test Destination is isolated from production analytics, automation, retention, and alerting.
+- The Cato account and EventsFeed data are approved for the demonstration.
 - The evaluator understands that an empty marker can replay retained EventsFeed records in pages of up to 3,000.
 
 Verify the host:
@@ -45,16 +50,46 @@ docker ps \
   --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-Record either:
+## 3. Choose how the poller reaches Cribl
 
-- The Docker host IP or DNS name and published Syslog TCP port, or
-- The existing non-production Cribl Docker network and Cribl service/container name.
+### Option 1: Published host TCP port, recommended default
 
-Do not use `127.0.0.1` or `localhost` as the Cribl host from inside the poller container.
+Use this when the Cribl container publishes the Syslog Source port to the Docker host, for example:
 
-## 2. Create a fresh Cato service principal
+```text
+0.0.0.0:9514->9514/tcp
+```
 
-For a shared demonstration, use a dedicated service principal rather than a personal administrator identity.
+The installer asks for the Docker host's LAN IP address or DNS name.
+
+This is the recommended default because it:
+
+- Is simpler to explain and troubleshoot.
+- Does not attach the poller to Cribl's internal Docker network.
+- Does not depend on customer-specific Docker network names and aliases.
+- Can work from the same Docker host or another reachable test host.
+
+Do not use `localhost` or `127.0.0.1`; inside the poller container those addresses refer to the poller itself.
+
+### Option 2: Shared external Docker network, advanced fallback
+
+Use this when:
+
+- Cribl does not publish the Syslog TCP port, or
+- Direct container-to-container connectivity is specifically required.
+
+The poller joins an existing non-production Cribl Docker network and connects using the Cribl container, service, or network-alias name.
+
+This method:
+
+- Depends on local Docker network names and aliases.
+- Gives the poller access to other services exposed on that network.
+- Is less portable between customer environments.
+- Requires the network to exist before installation.
+
+**Recommendation:** choose option 1 unless the Cribl listener is not published or the deployment specifically requires a shared Docker network.
+
+## 4. Create a fresh Cato service principal
 
 In the Cato Management Application:
 
@@ -62,22 +97,22 @@ In the Cato Management Application:
 2. Select **New**.
 3. Select **Create New**.
 4. Select **Create as Service Principal**.
-5. Use a descriptive name such as:
+5. Use a name such as:
 
    ```text
    Cribl EventsFeed Demo
    ```
 
 6. Assign Viewer or equivalent read-only permissions.
-7. Limit the scope to the approved test account and only the resources required for the demonstration.
+7. Limit the scope to the approved test account and required resources.
 8. Apply the configuration.
 
-## 3. Create a fresh Service API Key
+## 5. Create a fresh Service API Key
 
 1. Go to **Resources > Service API Keys**.
 2. Select **New**.
 3. Select the new service principal.
-4. Use a descriptive key name such as:
+4. Use a descriptive name such as:
 
    ```text
    catocribbler-demo-YYYYMMDD
@@ -97,26 +132,20 @@ The installer requests the key twice without displaying it and stores it only in
 
 Do not paste the key into chat, tickets, issue trackers, shell history, or documentation.
 
-## 4. Review the installer
+## 6. Download and inspect a pinned installer
 
-For a customer-facing demonstration, use a reviewed commit rather than mutable `main`.
-
-Set the reviewed commit:
+Use a reviewed commit rather than mutable `main`:
 
 ```bash
 INSTALL_REF=<reviewed-commit-sha>
-```
 
-Download and inspect the exact installer from that commit:
-
-```bash
 curl -fsSLo /tmp/catocribbler-install.sh \
   "https://raw.githubusercontent.com/dzcassell/catocribbler/${INSTALL_REF}/install.sh"
 
 less /tmp/catocribbler-install.sh
 ```
 
-Run the reviewed script and require the repository checkout to use the same commit:
+Run the reviewed script and force the repository checkout to use the same commit:
 
 ```bash
 sudo env \
@@ -134,9 +163,9 @@ curl -fsSL \
       bash
 ```
 
-The installer reads answers from `/dev/tty`, so prompts remain interactive even when the script is piped into Bash.
+The installer reads answers from `/dev/tty`, so prompts remain interactive through a pipe.
 
-## 5. Installer questions
+## 7. Installer questions
 
 The installer asks for:
 
@@ -146,23 +175,16 @@ The installer asks for:
    I UNDERSTAND
    ```
 
-2. Installation directory, default:
+2. Installation directory, default `/opt/cribbler`.
+3. Cato GraphQL API URL, default:
 
    ```text
-   /opt/cribbler
-   ```
-
-3. Cato GraphQL API endpoint, default:
-
-   ```text
-   https://api.us1.catonetworks.com/api/v1/graphql2
+   https://api.catonetworks.com/api/v1/graphql
    ```
 
 4. Numeric Cato account ID.
-5. Cribl connection method:
-   - Published Docker-host TCP port, or
-   - Shared external Docker network.
-6. Cribl host, container name, service name, or network alias.
+5. Cribl connection method.
+6. Cribl Docker-host address or shared-network details.
 7. Cribl Syslog TCP port, default `9514`.
 8. Whether TLS is enabled.
 9. TLS server name and PEM CA chain when TLS is used.
@@ -172,21 +194,11 @@ The installer asks for:
 13. Whether to send one synthetic test event.
 14. Whether to start continuous polling.
 
-The installer rejects:
+The installer rejects relative paths, `/`, `/opt`, non-empty install directories, invalid account IDs, invalid ports, missing Docker networks, missing CA files, and mismatched API-key entries.
 
-- Relative paths
-- `/`
-- `/opt`
-- Existing non-empty installation directories
-- Invalid numeric account IDs
-- Invalid TCP ports
-- Missing external Docker networks
-- Missing TLS CA files
-- Mismatched API-key entries
+## 8. What the installer creates
 
-## 6. What the installer creates
-
-With the default path, the installation resembles:
+With the default path:
 
 ```text
 /opt/cribbler/
@@ -210,29 +222,20 @@ With the default path, the installation resembles:
 └── docs/
 ```
 
-The local files are protected as follows:
+Local protection:
 
 - `.env`: mode `0600`
 - API key: owner UID/GID `10001`, mode `0400`
 - Cribl CA file: owner UID/GID `10001`, mode `0400`
-- Marker directory: owner UID/GID `10001`, mode `0700`
+- Secret and marker directories: owner UID/GID `10001`, mode `0700`
 
 The Docker build context excludes `.env`, `secrets/`, `state/`, and `compose.override.yaml`.
 
-## 7. Automatic preflights
-
-Before continuous polling, the installer performs:
+## 9. Automatic preflights
 
 ### Cato API preflight
 
-The installed poller code:
-
-- Reads the new secret file.
-- Authenticates with `x-api-key`.
-- Calls EventsFeed for the configured account.
-- Decodes the returned records.
-- Does not send them to Cribl.
-- Does not write the marker.
+The installed poller code authenticates, calls EventsFeed, and decodes one page without sending events to Cribl or updating the marker.
 
 Expected result:
 
@@ -242,7 +245,7 @@ CATO API PREFLIGHT PASS fetched=N decoded=N current_marker_len=0 returned_marker
 
 ### Cribl connection preflight
 
-The installed poller code opens the configured TCP or TLS socket to Cribl.
+The installed poller code opens the configured TCP or TLS socket.
 
 Expected result:
 
@@ -258,24 +261,17 @@ The installer can send one RFC 5424 event with:
 event_type=Catocribbler Installer Synthetic Test
 ```
 
-Confirm that this event:
+Confirm the event reaches the intended Source, Route, Pipeline, and isolated Destination.
 
-1. Reaches the intended Cribl Syslog Source.
-2. Matches the `cato_events_route` Route.
-3. Passes through `cato_normalize`.
-4. Reaches the isolated test Destination.
+## 10. Start continuous polling
 
-## 8. Starting continuous polling
-
-The installer does not start polling automatically after preflights.
-
-It displays the replay warning and requires the evaluator to type:
+The installer requires the evaluator to type:
 
 ```text
 START
 ```
 
-Pressing Enter leaves the installation built and tested but stopped.
+before continuous polling begins. Pressing Enter leaves the installation built and tested but stopped.
 
 Start it later with:
 
@@ -298,13 +294,11 @@ INFO Fetched=3000 Sent=3000 marker_len=180
 INFO Fetched=425 Sent=425 marker_len=180
 ```
 
-A full 3,000-record page is drained immediately. This can create significant volume.
+A full 3,000-record page is drained immediately and can create significant volume.
 
-`Fetched=N Sent=N` proves that the poller wrote the records to the Cribl socket. It does not prove that Cribl parsed, routed, transformed, persisted, or delivered them correctly.
+`Fetched=N Sent=N` proves only that the poller wrote records to the Cribl socket. It does not prove downstream parsing, routing, persistence, or delivery.
 
-## 9. Post-install validation
-
-Run:
+## 11. Post-install validation
 
 ```bash
 cd /opt/cribbler/poller
@@ -314,6 +308,7 @@ docker compose logs --tail=100 cato-events-poller
 
 stat -c 'uid=%u gid=%g mode=%a size=%s path=%n' \
   .env \
+  secrets \
   secrets/cato_api_key \
   secrets/cribl_ca.pem \
   state \
@@ -323,13 +318,13 @@ git -C /opt/cribbler rev-parse HEAD
 git -C /opt/cribbler status --short
 ```
 
-Expected results:
+Expected:
 
-- Container state is `Up` when polling was started.
+- Container is `Up` when polling was started.
 - Logs contain matching `Fetched` and `Sent` counts.
-- `state/marker.txt` exists after a successfully delivered page.
+- The marker exists after a successfully delivered page.
 - The Git commit matches the reviewed commit.
-- `git status --short` does not list `.env`, secrets, state, installation metadata, or Compose overrides.
+- Git status does not list local configuration, secrets, state, metadata, or overrides.
 
 Also confirm in Cribl:
 
@@ -340,64 +335,11 @@ Also confirm in Cribl:
 - The isolated Destination receives events.
 - Queues remain healthy.
 
-## 10. Useful commands
+## 12. Cleanup
 
 ```bash
 cd /opt/cribbler/poller
-```
-
-Status:
-
-```bash
-docker compose ps
-```
-
-Logs:
-
-```bash
-docker compose logs -f cato-events-poller
-```
-
-Stop:
-
-```bash
-docker compose stop cato-events-poller
-```
-
-Start:
-
-```bash
-docker compose up -d
-```
-
-Remove only the poller container and private Compose network while preserving local files:
-
-```bash
 docker compose down
 ```
 
-## 11. Cleanup after the demonstration
-
-1. Stop and remove the poller:
-
-   ```bash
-   cd /opt/cribbler/poller
-   docker compose down
-   ```
-
-2. Revoke the Cato Service API Key.
-3. Remove the demonstration-only service principal if it is no longer needed.
-4. Remove test-only Cribl Source, Route, Pipeline, and Destination objects when appropriate.
-5. Remove the poller from any shared Docker network.
-6. Destroy copied keys, CA files, marker state, backups, and test data according to policy.
-7. Remove the installation directory:
-
-   ```bash
-   rm -rf -- /opt/cribbler
-   ```
-
-## Manual installation
-
-The interactive wrapper is the preferred method because it applies the current directory, secret, networking, preflight, and replay safeguards consistently.
-
-For unusual environments, read [`INSTALLER.md`](INSTALLER.md), [`CRIBL.md`](CRIBL.md), and [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md), then reproduce the same controls manually. Do not omit the independent Cato and Cribl preflights.
+Then revoke the Cato Service API Key, remove the demonstration-only service principal when appropriate, remove test-only Cribl objects, detach external Docker networks, destroy copied credentials and state according to policy, and remove the installation directory when no longer required.
