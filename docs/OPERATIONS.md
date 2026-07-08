@@ -1,11 +1,9 @@
 # Demonstration lifecycle, backup, cleanup, and monitoring
 
 > [!CAUTION]
-> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This repository is not supported by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. There is no license grant, no warranty, no maintenance promise, and no obligation to assist. Do not operate this code as a production service. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
+> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This repository is not supported by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. There is no license grant, warranty, maintenance promise, or obligation to assist. Do not operate this code as a production service. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 
-This guide assumes the interactive installer was used. The default installation directory is `/opt/cribbler`, but the evaluator may select another absolute path.
-
-Set the actual installation directory before using any command:
+This guide assumes the interactive installer was used. The default installation directory is `/opt/cribbler`, but another absolute path may have been selected.
 
 ```bash
 INSTALL_DIR=${INSTALL_DIR:-/opt/cribbler}
@@ -32,7 +30,7 @@ A successful cycle resembles:
 INFO Fetched=144 Sent=144 marker_len=180
 ```
 
-`Fetched=N Sent=N` means the poller wrote the records to the Cribl socket. It does not prove Cribl parsed, routed, transformed, persisted, or delivered them correctly.
+`Fetched=N Sent=N` means the poller wrote records to the Cribl socket. It does not prove downstream parsing, routing, persistence, or delivery.
 
 ## 2. Start, stop, restart, and remove
 
@@ -42,7 +40,7 @@ Start:
 docker compose up -d
 ```
 
-Stop without removing the container:
+Stop:
 
 ```bash
 docker compose stop cato-events-poller
@@ -60,13 +58,13 @@ Recreate after configuration or key changes:
 docker compose up -d --force-recreate cato-events-poller
 ```
 
-Remove only the poller container and its private Compose network while preserving local configuration, secrets, and marker state:
+Remove the poller container and its private Compose network while preserving local files:
 
 ```bash
 docker compose down
 ```
 
-Run these commands only from the poller directory. They must not target the existing Cribl Compose project.
+Run these commands only from the poller directory. They must not target the Cribl Compose project.
 
 ## 3. Marker state
 
@@ -92,11 +90,11 @@ Do not:
 - Restore an older marker unless replay is intentional and approved.
 - Assume the marker has a fixed length.
 
-Losing or resetting it can replay retained events and create duplicates, volume spikes, storage use, or downstream cost.
+Losing or resetting the marker can replay retained events and create duplicates, volume spikes, storage use, or downstream cost.
 
 ## 4. Installation metadata
 
-The interactive installer records non-secret details in:
+The installer records non-secret details in:
 
 ```text
 <install-directory>/INSTALLATION_INFO.txt
@@ -110,11 +108,11 @@ git -C "${INSTALL_DIR}" rev-parse HEAD
 git -C "${INSTALL_DIR}" status --short
 ```
 
-Local `.env`, secrets, state, installation metadata, and Compose overrides are ignored by Git.
+The exact installed commit is recorded automatically for troubleshooting. The customer does not select or enter it during installation.
 
 ## 5. Protected demonstration backup
 
-Back up only when the approved test plan requires continuity:
+Back up only when continuity is required:
 
 ```bash
 umask 077
@@ -126,7 +124,6 @@ cp -a secrets "${BACKUP}/"
 cp -a state "${BACKUP}/"
 test -e compose.override.yaml && cp -a compose.override.yaml "${BACKUP}/"
 cp -a "${INSTALL_DIR}/INSTALLATION_INFO.txt" "${BACKUP}/" 2>/dev/null || true
-git -C "${INSTALL_DIR}" rev-parse HEAD > "${BACKUP}/git-commit.txt"
 
 chmod -R go-rwx "${BACKUP}"
 printf 'Backup created: %s\n' "${BACKUP}"
@@ -136,7 +133,7 @@ The backup can contain credentials, certificates, tenant identifiers, and marker
 
 ## 6. Rotate the Cato API key
 
-Create a new restricted Service API Key in CMA before changing the local file. Revoke an exposed key immediately; otherwise validate the replacement before revoking the old key.
+Create a new restricted Service API Key in CMA before changing the local file. Revoke an exposed key immediately.
 
 ```bash
 umask 077
@@ -161,7 +158,7 @@ Revoke the old key after validation.
 
 ## 7. Change the account or endpoint
 
-Changing the account or regional endpoint changes the EventsFeed context. Do not reuse the previous account's marker.
+Changing the account or endpoint changes the EventsFeed context. Do not reuse the previous account's marker.
 
 ```bash
 docker compose stop cato-events-poller
@@ -180,7 +177,7 @@ Run the Cato preflight before restarting. A new account can create a large retai
 
 Edit `.env` and, when using a shared external Docker network, `compose.override.yaml`.
 
-Validate the resolved Compose configuration:
+Validate the Compose configuration:
 
 ```bash
 docker compose config >/dev/null
@@ -197,33 +194,36 @@ Then run:
 docker compose up -d --force-recreate cato-events-poller
 ```
 
-## 9. Evaluate a newer commit
+## 9. Update to the current repository version
 
-There is no supported upgrade path or compatibility promise.
+There is no supported upgrade path or compatibility promise. Back up marker state before updating when continuity matters.
 
-Review changes before updating:
+Stop the poller:
+
+```bash
+cd "${POLLER_DIR}"
+docker compose stop cato-events-poller
+```
+
+Update the local repository to the current `main` version:
 
 ```bash
 cd "${INSTALL_DIR}"
-CURRENT_COMMIT="$(git rev-parse HEAD)"
-printf 'Current commit: %s\n' "${CURRENT_COMMIT}"
-
-git fetch origin
-git log --oneline --decorate HEAD..origin/main
-git diff --stat HEAD..origin/main
+git fetch origin main
+git reset --hard origin/main
 ```
 
-Back up marker state if continuity matters. Check out only a reviewed commit:
+Rebuild:
 
 ```bash
-git checkout --detach <reviewed-commit-sha>
-cd poller
-
+cd "${POLLER_DIR}"
 docker compose config >/dev/null
 docker compose build --pull --no-cache
 ```
 
-Re-run Cato authentication, Cribl connectivity, and synthetic-event validation before recreating the continuous poller.
+Re-run the Cato preflight, Cribl connectivity test, and synthetic event validation before starting the poller again.
+
+The customer does not need to choose a commit identifier.
 
 ## 10. Inspect container controls
 
@@ -252,16 +252,16 @@ These controls do not prove security or production readiness.
 
 During a supervised demonstration, watch:
 
-- Container state and restarts.
-- Time since the last successful page.
-- HTTP 401, 403, 422, and 429 responses.
-- DNS, TCP, and TLS errors.
-- Repeated full 3,000-record pages.
-- Marker creation and permissions.
-- Cribl Source counts.
-- Route and Pipeline errors.
-- Destination queues, storage, and backpressure.
-- API-key and certificate expiration.
+- Container state and restarts
+- Time since the last successful page
+- HTTP 401, 403, 422, and 429 responses
+- DNS, TCP, and TLS errors
+- Repeated full 3,000-record pages
+- Marker creation and permissions
+- Cribl Source counts
+- Route and Pipeline errors
+- Destination queues, storage, and backpressure
+- API-key and certificate expiration
 
 ## 12. End the demonstration
 
@@ -273,10 +273,10 @@ docker compose down
 Then:
 
 1. Revoke the Cato Service API Key.
-2. Remove the demonstration-only service principal when no longer needed.
+2. Remove the demonstration Service Principal when no longer needed.
 3. Remove test-only Cribl objects when appropriate.
 4. Remove the poller from external Docker networks.
-5. Destroy local keys, CA files, marker state, backups, and test data according to policy.
+5. Destroy local keys, certificates, marker state, backups, and test data according to policy.
 6. Remove the installation directory:
 
    ```bash
