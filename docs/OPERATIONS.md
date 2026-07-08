@@ -1,63 +1,40 @@
 # Demonstration lifecycle, backup, cleanup, and monitoring
 
 > [!CAUTION]
-> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This repository is not supported by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. There is no license grant, no warranty, no maintenance promise, no security-update commitment, and no obligation to assist. Do not operate this code as a production service. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
+> **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This repository is not supported by Damon Cassell, Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone else. There is no license grant, no warranty, no maintenance promise, and no obligation to assist. Do not operate this code as a production service. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 
-This guide describes limited lifecycle tasks for an isolated evaluation of `cato-events-poller` beside an existing non-production Cribl Stream Docker deployment.
+This guide assumes the interactive installer was used. The default installation directory is `/opt/cribbler`, but the evaluator may select another absolute path.
 
-The commands are examples, not a supported runbook. Independently review every command before execution. The code may lose, duplicate, delay, expose, or replay events and may stop working without notice.
-
-Run commands from:
+Set the actual installation directory before using any command:
 
 ```bash
-cd /opt/catocribbler/poller
+INSTALL_DIR=${INSTALL_DIR:-/opt/cribbler}
+POLLER_DIR="${INSTALL_DIR}/poller"
+cd "${POLLER_DIR}"
 ```
 
-## 1. Demonstration status checks
+## 1. Status and logs
 
 ```bash
 docker compose ps
-docker compose logs --tail=50 cato-events-poller
+docker compose logs --tail=100 cato-events-poller
 ```
 
-A running demonstration may show:
+Follow logs:
 
-```text
-cato-events-poller   Up ...
+```bash
+docker compose logs -f cato-events-poller
 ```
 
-and:
+A successful cycle resembles:
 
 ```text
-INFO starting marker_len=180
 INFO Fetched=144 Sent=144 marker_len=180
 ```
 
-These messages are not a health certification.
+`Fetched=N Sent=N` means the poller wrote the records to the Cribl socket. It does not prove Cribl parsed, routed, transformed, persisted, or delivered them correctly.
 
-## 2. Understand what the logs do and do not prove
-
-- `Fetched`: records returned by Cato.
-- `Sent`: records written to the connected Cribl TCP/TLS socket.
-- `marker_len`: length of the current opaque Cato marker.
-
-A matching line such as:
-
-```text
-Fetched=144 Sent=144
-```
-
-indicates that the demonstration poller wrote the page to the socket without reporting an exception. It does **not** prove:
-
-- Cribl parsed the RFC 5424 record correctly.
-- The Route matched.
-- The Pipeline transformed the event correctly.
-- The Destination persisted the event.
-- No duplication, loss, reordering, exposure, or downstream failure occurred.
-
-Validate every stage independently in the test Cribl environment.
-
-## 3. Start, stop, restart, and remove only the demonstration poller
+## 2. Start, stop, restart, and remove
 
 Start:
 
@@ -65,7 +42,7 @@ Start:
 docker compose up -d
 ```
 
-Stop:
+Stop without removing the container:
 
 ```bash
 docker compose stop cato-events-poller
@@ -77,29 +54,29 @@ Restart:
 docker compose restart cato-events-poller
 ```
 
-Recreate:
+Recreate after configuration or key changes:
 
 ```bash
 docker compose up -d --force-recreate cato-events-poller
 ```
 
-Remove the poller container and its private Compose network while preserving local files:
+Remove only the poller container and its private Compose network while preserving local configuration, secrets, and marker state:
 
 ```bash
 docker compose down
 ```
 
-These commands should not operate on the existing Cribl Compose project. Verify the active directory and Compose project name before running them, because Docker will faithfully obey mistakes with admirable efficiency.
+Run these commands only from the poller directory. They must not target the existing Cribl Compose project.
 
-## 4. Marker state
+## 3. Marker state
 
-The demonstration marker is stored at:
+The marker is stored in:
 
 ```text
-state/marker.txt
+<install-directory>/poller/state/marker.txt
 ```
 
-Check metadata without printing the value:
+Inspect metadata without displaying the marker:
 
 ```bash
 ls -l state/marker.txt
@@ -107,187 +84,148 @@ wc -c state/marker.txt
 sha256sum state/marker.txt
 ```
 
-The poller attempts to advance the marker after writing a page to the Cribl socket.
-
-Preserve it during a controlled demonstration if you need continuity across:
-
-- Image rebuilds.
-- Container recreation.
-- API-key rotation.
-- Test-host restart.
-- Changes to the Cribl connection method.
-
 Do not:
 
-- Share one marker directory between active pollers.
-- Edit the marker manually.
-- Assume a fixed marker length.
-- Treat marker preservation as proof that no events were lost or duplicated.
+- Edit the marker.
+- Publish its value.
+- Share one state directory between active pollers.
+- Restore an older marker unless replay is intentional and approved.
+- Assume the marker has a fixed length.
 
-## 5. Demonstration backup
+Losing or resetting it can replay retained events and create duplicates, volume spikes, storage use, or downstream cost.
 
-Back up only what the approved test plan requires:
+## 4. Installation metadata
 
-- `.env`
-- `state/marker.txt`
-- Cribl CA chain
-- API-key reference or protected key file
-- Git commit SHA
-- `compose.override.yaml`, if used
+The interactive installer records non-secret details in:
 
-Example protected backup:
+```text
+<install-directory>/INSTALLATION_INFO.txt
+```
+
+Review:
+
+```bash
+cat "${INSTALL_DIR}/INSTALLATION_INFO.txt"
+git -C "${INSTALL_DIR}" rev-parse HEAD
+git -C "${INSTALL_DIR}" status --short
+```
+
+Local `.env`, secrets, state, installation metadata, and Compose overrides are ignored by Git.
+
+## 5. Protected demonstration backup
+
+Back up only when the approved test plan requires continuity:
 
 ```bash
 umask 077
-BACKUP="/root/catocribbler-demo-backup-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP"
+BACKUP="/root/cribbler-demo-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "${BACKUP}"
 
-cp -a .env "$BACKUP/"
-cp -a secrets "$BACKUP/"
-cp -a state "$BACKUP/"
-test -e compose.override.yaml && cp -a compose.override.yaml "$BACKUP/"
-git -C /opt/catocribbler rev-parse HEAD > "$BACKUP/git-commit.txt"
+cp -a .env "${BACKUP}/"
+cp -a secrets "${BACKUP}/"
+cp -a state "${BACKUP}/"
+test -e compose.override.yaml && cp -a compose.override.yaml "${BACKUP}/"
+cp -a "${INSTALL_DIR}/INSTALLATION_INFO.txt" "${BACKUP}/" 2>/dev/null || true
+git -C "${INSTALL_DIR}" rev-parse HEAD > "${BACKUP}/git-commit.txt"
 
-chmod -R go-rwx "$BACKUP"
-echo "Backup created: $BACKUP"
+chmod -R go-rwx "${BACKUP}"
+printf 'Backup created: %s\n' "${BACKUP}"
 ```
 
-This backup can contain credentials, certificates, tenant identifiers, and event state. Protect and destroy it according to the approved test plan.
+The backup can contain credentials, certificates, tenant identifiers, and marker state. Protect and destroy it according to policy.
 
-## 6. Evaluate a newer repository commit
+## 6. Rotate the Cato API key
 
-There is no supported upgrade path, compatibility promise, release process, or maintenance schedule.
-
-Before evaluating another commit:
+Create a new restricted Service API Key in CMA before changing the local file. Revoke an exposed key immediately; otherwise validate the replacement before revoking the old key.
 
 ```bash
-cd /opt/catocribbler
+umask 077
+read -rsp 'New Cato API key: ' CATO_KEY
+printf '%s' "${CATO_KEY}" > secrets/cato_api_key.new
+unset CATO_KEY
+printf '\n'
+
+chown 10001:10001 secrets/cato_api_key.new
+chmod 0400 secrets/cato_api_key.new
+mv secrets/cato_api_key.new secrets/cato_api_key
+```
+
+Run the Cato preflight from [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md), then recreate the container:
+
+```bash
+docker compose up -d --force-recreate cato-events-poller
+docker compose logs --tail=100 cato-events-poller
+```
+
+Revoke the old key after validation.
+
+## 7. Change the account or endpoint
+
+Changing the account or regional endpoint changes the EventsFeed context. Do not reuse the previous account's marker.
+
+```bash
+docker compose stop cato-events-poller
+
+if test -e state/marker.txt; then
+  mv state/marker.txt \
+    "state/marker.previous-account.$(date +%Y%m%d-%H%M%S)"
+fi
+
+nano .env
+```
+
+Run the Cato preflight before restarting. A new account can create a large retained-events replay.
+
+## 8. Change Cribl connectivity
+
+Edit `.env` and, when using a shared external Docker network, `compose.override.yaml`.
+
+Validate the resolved Compose configuration:
+
+```bash
+docker compose config >/dev/null
+```
+
+Then run:
+
+1. Cribl TCP or TLS preflight.
+2. Synthetic event test.
+3. Cribl Source, Route, Pipeline, and Destination validation.
+4. Container recreation.
+
+```bash
+docker compose up -d --force-recreate cato-events-poller
+```
+
+## 9. Evaluate a newer commit
+
+There is no supported upgrade path or compatibility promise.
+
+Review changes before updating:
+
+```bash
+cd "${INSTALL_DIR}"
 CURRENT_COMMIT="$(git rev-parse HEAD)"
-echo "Current commit: $CURRENT_COMMIT"
+printf 'Current commit: %s\n' "${CURRENT_COMMIT}"
 
 git fetch origin
 git log --oneline --decorate HEAD..origin/main
 git diff --stat HEAD..origin/main
 ```
 
-Back up demonstration marker state if continuity matters:
+Back up marker state if continuity matters. Check out only a reviewed commit:
 
 ```bash
-cp -a \
-  poller/state/marker.txt \
-  "/root/cato-marker-before-demo-update-$(date +%Y%m%d-%H%M%S).txt"
-```
-
-After independent review:
-
-```bash
-git pull --ff-only
+git checkout --detach <reviewed-commit-sha>
 cd poller
 
-docker compose config
+docker compose config >/dev/null
 docker compose build --pull --no-cache
-docker compose up -d --force-recreate cato-events-poller
-docker compose logs --tail=100 cato-events-poller
 ```
 
-Re-run all Cato, TCP/TLS, synthetic-event, Route, Pipeline, and Destination tests. A newer commit can be less functional or less secure than the previous one.
+Re-run Cato authentication, Cribl connectivity, and synthetic-event validation before recreating the continuous poller.
 
-## 7. Return to a previous commit
-
-There is no supported rollback process. For an isolated demonstration, you may attempt:
-
-```bash
-cd /opt/catocribbler
-git checkout --detach PREVIOUS_COMMIT_SHA
-cd poller
-
-docker compose build --no-cache
-docker compose up -d --force-recreate cato-events-poller
-docker compose logs --tail=100 cato-events-poller
-```
-
-Do not restore an older marker unless replay is intentional and approved. Code state and queue state are separate risks.
-
-## 8. Rotate the demonstration Cato API key
-
-Use a short-lived, minimally scoped key. Revoke it when the evaluation ends.
-
-Create and test the replacement before revoking the old key unless an exposure requires immediate revocation:
-
-```bash
-umask 077
-read -rsp 'New Cato API key: ' CATO_KEY
-printf '%s' "$CATO_KEY" > secrets/cato_api_key.new
-unset CATO_KEY
-printf '\n'
-
-chown 10001 secrets/cato_api_key.new
-chmod 0400 secrets/cato_api_key.new
-mv secrets/cato_api_key.new secrets/cato_api_key
-
-docker compose up -d --force-recreate cato-events-poller
-docker compose logs --tail=100 cato-events-poller
-```
-
-Run the authentication checks in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
-
-## 9. Change the test account or API endpoint
-
-Changing the account or endpoint changes the EventsFeed context.
-
-```dotenv
-CATO_ACCOUNT_ID=...
-CATO_API_URL=...
-```
-
-Do not reuse the previous account's marker:
-
-```bash
-docker compose stop cato-events-poller
-mv state/marker.txt "state/marker.previous-test-account.$(date +%Y%m%d-%H%M%S)"
-nano .env
-docker compose up -d cato-events-poller
-```
-
-A new account can produce a large backlog. Use only a specifically approved test account.
-
-## 10. Change how the poller reaches Cribl
-
-Typical demonstration changes include:
-
-- Moving between a host-published port and shared Docker test network.
-- Changing the test Worker or VIP.
-- Enabling TLS.
-- Changing the test Syslog Source port.
-
-Update `.env` and, when required, `compose.override.yaml`.
-
-Then run:
-
-1. TCP preflight.
-2. TLS preflight when enabled.
-3. Synthetic syslog test.
-4. Route/Pipeline/Destination validation.
-
-Only then recreate the poller:
-
-```bash
-docker compose up -d --force-recreate cato-events-poller
-```
-
-## 11. Intentionally reset the marker
-
-Resetting the marker can replay retained EventsFeed records and create duplicates, volume spikes, storage usage, or downstream cost.
-
-Only do this under an approved test plan:
-
-```bash
-docker compose stop cato-events-poller
-mv state/marker.txt "state/marker.before-reset.$(date +%Y%m%d-%H%M%S)"
-docker compose up -d cato-events-poller
-```
-
-## 12. Inspect the demonstration container controls
+## 10. Inspect container controls
 
 ```bash
 docker inspect cato-events-poller --format '
@@ -299,7 +237,7 @@ Networks={{json .NetworkSettings.Networks}}
 '
 ```
 
-Expected values may include:
+Expected values include:
 
 ```text
 User=10001
@@ -308,64 +246,43 @@ SecurityOpt=["no-new-privileges:true"]
 RestartPolicy=unless-stopped
 ```
 
-These settings do not establish security, correctness, supportability, or production readiness.
+These controls do not prove security or production readiness.
 
-## 13. Suggested temporary monitoring
+## 11. Temporary monitoring
 
 During a supervised demonstration, watch:
 
-- Poller container state and restarts.
-- Time since the last reported successful page.
+- Container state and restarts.
+- Time since the last successful page.
 - HTTP 401, 403, 422, and 429 responses.
 - DNS, TCP, and TLS errors.
 - Repeated full 3,000-record pages.
-- Marker presence and directory permissions.
-- Cribl Source event counts.
+- Marker creation and permissions.
+- Cribl Source counts.
 - Route and Pipeline errors.
-- Test Destination queues, storage, and backpressure.
-- API-key expiration.
-- Test certificate expiration.
-- Unexpected access to the shared Docker network.
+- Destination queues, storage, and backpressure.
+- API-key and certificate expiration.
 
-Monitoring suggestions do not create a support or maintenance obligation.
-
-## 14. Troubleshooting
-
-Use [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) for demonstration diagnostics, including:
-
-- Creating restricted Admin and Service API Keys.
-- Authenticating directly to the Cato endpoint.
-- Interpreting Cato HTTP errors.
-- Discovering Cribl Docker ports and networks.
-- Testing TCP and TLS.
-- Sending a synthetic event.
-- Validating Source, Route, Pipeline, and Destination stages.
-- Repairing secret and marker permissions.
-- Collecting diagnostics without intentionally exposing secrets.
-
-## 15. End the demonstration
-
-Stop and remove the poller:
+## 12. End the demonstration
 
 ```bash
-cd /opt/catocribbler/poller
+cd "${POLLER_DIR}"
 docker compose down
 ```
 
 Then:
 
-- Revoke the Cato API key.
-- Remove a demonstration-only service principal.
-- Remove test Cribl Source, Route, Pipeline, and Destination objects when no longer required.
-- Remove the poller from external Docker networks.
-- Destroy local keys, certificates, backups, and test data according to policy.
-- Remove the repository clone if no longer required.
-- Confirm that no production systems were altered.
+1. Revoke the Cato Service API Key.
+2. Remove the demonstration-only service principal when no longer needed.
+3. Remove test-only Cribl objects when appropriate.
+4. Remove the poller from external Docker networks.
+5. Destroy local keys, CA files, marker state, backups, and test data according to policy.
+6. Remove the installation directory:
+
+   ```bash
+   rm -rf -- "${INSTALL_DIR}"
+   ```
 
 ## No support, maintenance, license, or warranty
 
-No person or organization is obligated to maintain this repository, publish updates, answer questions, investigate defects, issue security notices, or assist with cleanup or incidents.
-
-There is no license grant from the author. All material is provided “AS IS” and “AS AVAILABLE,” without warranties and without liability to the maximum extent permitted by law.
-
-Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
+No person or organization is obligated to maintain this repository, answer questions, investigate defects, issue security notices, or assist with incidents. All material is provided “AS IS” and “AS AVAILABLE.” Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
