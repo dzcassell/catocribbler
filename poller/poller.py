@@ -23,16 +23,19 @@ APPNAME = "cato-events"
 HOSTNAME = os.environ.get("SYSLOG_HOSTNAME", "cato-events-poller")
 MAX_FETCH = 3000
 
-# EventsFeed returns records as JSON values for the client to decode. Request
-# the records scalar directly rather than attempting to select child fields.
+# Match Cato's documented EventsFeed schema and the proven legacy poller.
 QUERY = """
-query eventsFeed($accountIDs: [ID!]!, $marker: String) {
+query eventsFeed($accountIDs: [ID!], $marker: String) {
   eventsFeed(accountIDs: $accountIDs, marker: $marker) {
     marker
     fetchedCount
     accounts {
       id
-      records
+      errorString
+      records {
+        time
+        fieldsMap
+      }
     }
   }
 }
@@ -118,37 +121,22 @@ def snake_case(value: str) -> str:
     return value.strip("_").lower() or "field"
 
 
-def decode_record(raw_record: Any) -> dict[str, Any]:
-    """Decode one EventsFeed record returned as JSON text or an object."""
-    if isinstance(raw_record, str):
-        decoded = json.loads(raw_record)
-    else:
-        decoded = raw_record
-
-    if not isinstance(decoded, dict):
+def normalize(account_id: Any, record: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(record, dict):
         raise TypeError(
-            f"EventsFeed record must decode to an object, got {type(decoded).__name__}"
+            f"EventsFeed record must be an object, got {type(record).__name__}"
         )
 
-    return decoded
-
-
-def normalize(account_id: Any, raw_record: Any) -> dict[str, Any]:
-    record = decode_record(raw_record)
     event: dict[str, Any] = {}
 
-    # Promote all ordinary record fields with stable snake_case names.
-    for key, value in record.items():
-        if key == "fieldsMap":
-            continue
-        event[snake_case(str(key))] = value
+    event_time = record.get("time")
+    if event_time is not None:
+        event["time"] = event_time
 
-    # Some EventsFeed representations carry event fields inside fieldsMap.
-    # Promote those fields without overwriting explicit top-level values.
     fields = record.get("fieldsMap")
     if isinstance(fields, dict):
         for key, value in fields.items():
-            event.setdefault(snake_case(str(key)), value)
+            event[snake_case(str(key))] = value
     elif fields is not None:
         event["fields_map"] = fields
 
@@ -170,16 +158,30 @@ def fetch(marker: str) -> dict[str, Any]:
             "query": QUERY,
             "variables": {
                 "accountIDs": [ACCOUNT_ID],
-                "marker": marker or None,
+                "marker": marker,
             },
         },
         timeout=(10, 60),
     )
-    response.raise_for_status()
+
+    if not response.ok:
+        body = response.text.strip().replace("\n", " ")[:2000]
+        raise RuntimeError(f"Cato API HTTP {response.status_code}: {body}")
+
     payload = response.json()
     if payload.get("errors"):
         raise RuntimeError(json.dumps(payload["errors"], separators=(",", ":")))
-    return payload["data"]["eventsFeed"]
+
+    result = payload["data"]["eventsFeed"]
+    account_errors = [
+        account.get("errorString")
+        for account in result.get("accounts") or []
+        if account.get("errorString")
+    ]
+    if account_errors:
+        raise RuntimeError("; ".join(account_errors))
+
+    return result
 
 
 def open_syslog_socket() -> socket.socket:
