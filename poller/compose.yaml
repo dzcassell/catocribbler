@@ -1,0 +1,23 @@
+services:
+  cato-events-poller:
+    build: .
+    container_name: cato-events-poller
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    secrets:
+      - cato_api_key
+      - cribl_ca
+    volumes:
+      - ./state:/state
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  cato_api_key:
+    file: ./secrets/cato_api_key
+  cribl_ca:
+    file: ./secrets/cribl_ca.pem
