@@ -220,12 +220,7 @@ def extract_events(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 def main() -> None:
     marker = read_marker()
-    LOG.info(
-        "starting account_id=%s url=%s marker_len=%d",
-        ACCOUNT_ID,
-        API_URL,
-        len(marker),
-    )
+    LOG.info("starting marker_len=%d", len(marker))
 
     while True:
         try:
