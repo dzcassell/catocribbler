@@ -23,6 +23,8 @@ APPNAME = "cato-events"
 HOSTNAME = os.environ.get("SYSLOG_HOSTNAME", "cato-events-poller")
 MAX_FETCH = 3000
 
+# EventsFeed returns records as JSON values for the client to decode. Request
+# the records scalar directly rather than attempting to select child fields.
 QUERY = """
 query eventsFeed($accountIDs: [ID!]!, $marker: String) {
   eventsFeed(accountIDs: $accountIDs, marker: $marker) {
@@ -30,12 +32,7 @@ query eventsFeed($accountIDs: [ID!]!, $marker: String) {
     fetchedCount
     accounts {
       id
-      records {
-        time
-        eventType
-        eventSubType
-        fieldsMap
-      }
+      records
     }
   }
 }
@@ -121,22 +118,43 @@ def snake_case(value: str) -> str:
     return value.strip("_").lower() or "field"
 
 
-def normalize(account_id: Any, record: dict[str, Any]) -> dict[str, Any]:
-    event: dict[str, Any] = {
-        "time": record.get("time"),
-        "event_type": record.get("eventType"),
-        "event_sub_type": record.get("eventSubType"),
-        "account_id": str(account_id),
-        "vendor": "cato",
-        "product": "cato_sase",
-    }
+def decode_record(raw_record: Any) -> dict[str, Any]:
+    """Decode one EventsFeed record returned as JSON text or an object."""
+    if isinstance(raw_record, str):
+        decoded = json.loads(raw_record)
+    else:
+        decoded = raw_record
 
-    fields = record.get("fieldsMap") or {}
+    if not isinstance(decoded, dict):
+        raise TypeError(
+            f"EventsFeed record must decode to an object, got {type(decoded).__name__}"
+        )
+
+    return decoded
+
+
+def normalize(account_id: Any, raw_record: Any) -> dict[str, Any]:
+    record = decode_record(raw_record)
+    event: dict[str, Any] = {}
+
+    # Promote all ordinary record fields with stable snake_case names.
+    for key, value in record.items():
+        if key == "fieldsMap":
+            continue
+        event[snake_case(str(key))] = value
+
+    # Some EventsFeed representations carry event fields inside fieldsMap.
+    # Promote those fields without overwriting explicit top-level values.
+    fields = record.get("fieldsMap")
     if isinstance(fields, dict):
         for key, value in fields.items():
             event.setdefault(snake_case(str(key)), value)
-    else:
+    elif fields is not None:
         event["fields_map"] = fields
+
+    event.setdefault("account_id", str(account_id))
+    event.setdefault("vendor", "cato")
+    event.setdefault("product", "cato_sase")
 
     return {key: value for key, value in event.items() if value is not None}
 
@@ -202,7 +220,12 @@ def extract_events(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 def main() -> None:
     marker = read_marker()
-    LOG.info("starting marker_len=%d", len(marker))
+    LOG.info(
+        "starting account_id=%s url=%s marker_len=%d",
+        ACCOUNT_ID,
+        API_URL,
+        len(marker),
+    )
 
     while True:
         try:
@@ -217,7 +240,7 @@ def main() -> None:
 
             fetched = int(result.get("fetchedCount") or 0)
             LOG.info(
-                "fetched=%d sent=%d marker_len=%d",
+                "Fetched=%d Sent=%d marker_len=%d",
                 fetched,
                 len(events),
                 len(marker),
