@@ -1,3 +1,9 @@
+# UNSUPPORTED, NON-PRODUCTION DEMONSTRATION CONFIGURATION ONLY.
+# Not supported, approved, endorsed, maintained, or warranted by Damon Cassell,
+# Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone
+# else. No license is granted by the author. See ../../../DISCLAIMER.md.
+# Do not deploy this Pipeline to a production Worker Group.
+
 output: default
 groups: {}
 asyncFuncTimeout: 1000
@@ -5,7 +11,7 @@ functions:
   - id: code
     filter: "true"
     disabled: false
-    description: "Parse Cato JSON from the syslog message field and promote it to top-level fields"
+    description: "UNSUPPORTED DEMO: Parse Cato JSON from syslog and promote it to top-level fields"
     conf:
       maxNumOfIterations: 5000
       code: |-
