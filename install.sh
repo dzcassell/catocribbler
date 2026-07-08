@@ -24,6 +24,11 @@ POLL_INTERVAL_SECONDS=""
 NETWORK_MODE=""
 NETWORK_DESCRIPTION=""
 CRIBL_DOCKER_NETWORK=""
+PRIMARY_IPV4=""
+DETECTED_CRIBL_CONTAINER=""
+DETECTED_CRIBL_MAPPING=""
+DETECTED_CRIBL_HOST=""
+DETECTED_CRIBL_PORT=""
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -143,6 +148,150 @@ validate_poll_interval() {
     fail "Polling interval must be at least 1 second."
 }
 
+detect_primary_ipv4() {
+  python3 - <<'PY'
+import ipaddress
+import socket
+
+candidates = []
+
+for target in (("1.1.1.1", 53), ("8.8.8.8", 53)):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(target)
+        candidates.append(sock.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        sock.close()
+
+try:
+    for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+        candidates.append(item[4][0])
+except OSError:
+    pass
+
+for value in candidates:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        continue
+
+    if not address.is_loopback and not address.is_link_local:
+        print(value)
+        raise SystemExit(0)
+PY
+}
+
+published_bind_to_host() {
+  local bind_address="$1"
+
+  bind_address="${bind_address#[}"
+  bind_address="${bind_address%]}"
+
+  case "${bind_address}" in
+    0.0.0.0|::|"")
+      [[ -n "${PRIMARY_IPV4}" ]] || return 1
+      printf '%s\n' "${PRIMARY_IPV4}"
+      ;;
+    127.*|::1)
+      return 1
+      ;;
+    *)
+      printf '%s\n' "${bind_address}"
+      ;;
+  esac
+}
+
+detect_published_cribl_listener() {
+  local container=""
+  local mapping=""
+  local bind_address=""
+  local host_address=""
+  local host_port=""
+
+  while IFS= read -r container; do
+    [[ -n "${container}" ]] || continue
+
+    while IFS= read -r mapping; do
+      [[ -n "${mapping}" ]] || continue
+
+      host_port="${mapping##*:}"
+      bind_address="${mapping%:*}"
+      host_address="$(published_bind_to_host "${bind_address}" || true)"
+
+      if [[ -n "${host_address}" && "${host_port}" =~ ^[0-9]+$ ]]; then
+        DETECTED_CRIBL_CONTAINER="${container}"
+        DETECTED_CRIBL_MAPPING="${mapping}"
+        DETECTED_CRIBL_HOST="${host_address}"
+        DETECTED_CRIBL_PORT="${host_port}"
+        return 0
+      fi
+    done < <(docker port "${container}" "${DEFAULT_CRIBL_PORT}/tcp" 2>/dev/null || true)
+  done < <(docker ps --filter 'name=cribl' --format '{{.Names}}')
+
+  return 1
+}
+
+configure_manual_published_listener() {
+  NETWORK_MODE="1"
+  NETWORK_DESCRIPTION="Published host TCP port"
+
+  if [[ -n "${PRIMARY_IPV4}" ]]; then
+    prompt CRIBL_SYSLOG_HOST \
+      "Address of the Docker host running Cribl" \
+      "${PRIMARY_IPV4}"
+  else
+    while [[ -z "${CRIBL_SYSLOG_HOST}" ]]; do
+      prompt CRIBL_SYSLOG_HOST \
+        "IP address or DNS name of the Docker host running Cribl"
+    done
+  fi
+
+  [[ ! "${CRIBL_SYSLOG_HOST}" =~ [[:space:]] ]] ||
+    fail "Cribl host cannot contain whitespace."
+
+  case "${CRIBL_SYSLOG_HOST}" in
+    localhost|127.*|::1)
+      fail "Do not use localhost or a loopback address for Cribl."
+      ;;
+  esac
+
+  prompt CRIBL_SYSLOG_PORT "Published Cribl Syslog TCP port" "${DEFAULT_CRIBL_PORT}"
+  validate_port
+}
+
+configure_shared_network() {
+  NETWORK_MODE="2"
+  NETWORK_DESCRIPTION="Shared external Docker network"
+
+  printf '\nAvailable Docker networks:\n' >&3
+  docker network ls --format '  {{.Name}}' >&3
+  printf '\n' >&3
+
+  while [[ -z "${CRIBL_DOCKER_NETWORK}" ]]; do
+    prompt CRIBL_DOCKER_NETWORK \
+      "Docker network used by the non-production Cribl Worker"
+  done
+
+  [[ ! "${CRIBL_DOCKER_NETWORK}" =~ [[:space:]] ]] ||
+    fail "Docker network name cannot contain whitespace."
+
+  docker network inspect "${CRIBL_DOCKER_NETWORK}" >/dev/null 2>&1 ||
+    fail "Docker network does not exist: ${CRIBL_DOCKER_NETWORK}"
+
+  while [[ -z "${CRIBL_SYSLOG_HOST}" ]]; do
+    prompt CRIBL_SYSLOG_HOST \
+      "Cribl Worker container, service, or network-alias name"
+  done
+
+  [[ ! "${CRIBL_SYSLOG_HOST}" =~ [[:space:]] ]] ||
+    fail "Cribl host cannot contain whitespace."
+
+  prompt CRIBL_SYSLOG_PORT "Cribl Syslog TCP port inside the Docker network" "${DEFAULT_CRIBL_PORT}"
+  validate_port
+}
+
 if [[ "${EUID}" -ne 0 ]]; then
   fail "Run this installer as root, for example: curl ... | sudo bash"
 fi
@@ -153,6 +302,8 @@ done
 
 docker info >/dev/null 2>&1 || fail "Docker is not running or is not accessible."
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is required."
+
+PRIMARY_IPV4="$(detect_primary_ipv4 || true)"
 
 cat >&3 <<'NOTICE'
 
@@ -215,79 +366,89 @@ while true; do
   printf 'The Cato account ID must contain digits only.\n' >&3
 done
 
-cat >&3 <<'NETWORK'
+if detect_published_cribl_listener; then
+  cat >&3 <<DETECTED
 
-Choose how the poller container will reach the existing Cribl Syslog Source:
+The installer found a running Cribl container with a published Syslog listener:
 
-  1. Published host TCP port (RECOMMENDED DEFAULT)
-     Choose this when the Cribl container publishes the Syslog port to its
-     Docker host, for example: 0.0.0.0:9514->9514/tcp.
+  Cribl container:            ${DETECTED_CRIBL_CONTAINER}
+  Docker port mapping:        ${DETECTED_CRIBL_MAPPING}
+  Address the poller will use: ${DETECTED_CRIBL_HOST}:${DETECTED_CRIBL_PORT}
 
-     You will enter the Docker host's LAN IP address or DNS name. This is the
-     simplest and most portable method, and it does not attach the poller to
-     Cribl's internal Docker network. Do not enter localhost or 127.0.0.1.
+For most installations, accept this detected setting. No address needs to be
+looked up or typed manually.
 
-  2. Shared external Docker network (ADVANCED FALLBACK)
-     Choose this when Cribl does not publish the Syslog port, or when direct
-     container-to-container networking is specifically required.
+DETECTED
 
-     The poller will join an existing Cribl Docker network and connect using
-     the Cribl container, service, or network-alias name. This depends on local
-     Docker network names and gives the poller access to other services exposed
-     on that network.
+  prompt_yes_no USE_DETECTED_CRIBL "Use this detected Cribl listener" "yes"
 
-Recommendation: press Enter for option 1 unless the Cribl Syslog TCP port is
-not published or the deployment specifically requires a shared Docker network.
+  if [[ "${USE_DETECTED_CRIBL}" == "yes" ]]; then
+    NETWORK_MODE="1"
+    NETWORK_DESCRIPTION="Auto-detected published host TCP port"
+    CRIBL_SYSLOG_HOST="${DETECTED_CRIBL_HOST}"
+    CRIBL_SYSLOG_PORT="${DETECTED_CRIBL_PORT}"
+  else
+    cat >&3 <<'ALTERNATIVES'
 
-NETWORK
+Choose an alternative only when the detected listener is not the intended one:
 
-while true; do
-  prompt NETWORK_MODE "Connection method: choose 1 or 2" "1"
-  case "${NETWORK_MODE}" in
-    1|2)
-      break
-      ;;
-    *)
-      printf 'Enter 1 or 2.\n' >&3
-      ;;
-  esac
-done
+  1. Enter a different published Cribl host address and TCP port
+  2. Join the Cribl Docker network directly (advanced)
 
-if [[ "${NETWORK_MODE}" == "1" ]]; then
-  NETWORK_DESCRIPTION="Published host TCP port"
+ALTERNATIVES
 
-  while [[ -z "${CRIBL_SYSLOG_HOST}" ]]; do
-    prompt CRIBL_SYSLOG_HOST \
-      "Cribl Docker-host LAN IP address or DNS name (not localhost)"
-  done
+    while true; do
+      prompt NETWORK_MODE "Alternative connection method: choose 1 or 2" "1"
+      case "${NETWORK_MODE}" in
+        1)
+          configure_manual_published_listener
+          break
+          ;;
+        2)
+          configure_shared_network
+          break
+          ;;
+        *)
+          printf 'Enter 1 or 2.\n' >&3
+          ;;
+      esac
+    done
+  fi
 else
-  NETWORK_DESCRIPTION="Shared external Docker network"
+  cat >&3 <<NO_DETECTION
 
-  printf '\nAvailable Docker networks:\n' >&3
-  docker network ls --format '  {{.Name}}' >&3
-  printf '\n' >&3
+The installer did not find a running Cribl container publishing TCP port
+${DEFAULT_CRIBL_PORT}. This can happen when Cribl uses another port, runs on
+another host, or is reachable only through a Docker network.
 
-  while [[ -z "${CRIBL_DOCKER_NETWORK}" ]]; do
-    prompt CRIBL_DOCKER_NETWORK \
-      "Existing non-production Cribl Docker network name"
-  done
+Choose how to reach it:
 
-  [[ ! "${CRIBL_DOCKER_NETWORK}" =~ [[:space:]] ]] ||
-    fail "Docker network name cannot contain whitespace."
+  1. Published host TCP port
+     Use the Docker host address detected by this installer and enter the
+     published Syslog port. Detected host address: ${PRIMARY_IPV4:-not detected}
 
-  docker network inspect "${CRIBL_DOCKER_NETWORK}" >/dev/null 2>&1 ||
-    fail "Docker network does not exist: ${CRIBL_DOCKER_NETWORK}"
+  2. Shared external Docker network (advanced)
+     Use an existing Cribl Docker network and the Cribl Worker container name.
 
-  while [[ -z "${CRIBL_SYSLOG_HOST}" ]]; do
-    prompt CRIBL_SYSLOG_HOST \
-      "Cribl container, service, or network-alias name"
+NO_DETECTION
+
+  while true; do
+    prompt NETWORK_MODE "Connection method: choose 1 or 2" "1"
+    case "${NETWORK_MODE}" in
+      1)
+        configure_manual_published_listener
+        break
+        ;;
+      2)
+        configure_shared_network
+        break
+        ;;
+      *)
+        printf 'Enter 1 or 2.\n' >&3
+        ;;
+    esac
   done
 fi
-
-[[ ! "${CRIBL_SYSLOG_HOST}" =~ [[:space:]] ]] || fail "Cribl host cannot contain whitespace."
-
-prompt CRIBL_SYSLOG_PORT "Cribl Syslog TCP port" "${DEFAULT_CRIBL_PORT}"
-validate_port
 
 prompt_yes_no USE_TLS "Use TLS for the Cribl Syslog connection" "no"
 
