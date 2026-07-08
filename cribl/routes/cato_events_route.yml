@@ -1,13 +1,19 @@
-# Merge this route into the existing Cribl Worker Group route.yml and replace
-# cato_file_output with the customer's validation or production Destination.
-# The filter intentionally accepts any Cribl Syslog Source ID and then narrows
-# on the RFC 5424 appname emitted by this poller.
+# UNSUPPORTED, NON-PRODUCTION DEMONSTRATION CONFIGURATION ONLY.
+# Not supported, approved, endorsed, maintained, or warranted by Damon Cassell,
+# Cato Networks, Cribl, any employer, contributor, vendor, partner, or anyone
+# else. No license is granted by the author. See ../../DISCLAIMER.md.
+# Do not merge this route into a production Worker Group.
+#
+# For an isolated test only, merge this route into the intended non-production
+# Worker Group route.yml and replace cato_file_output with an isolated test
+# Destination. The filter accepts any Cribl Syslog Source ID and then narrows on
+# the RFC 5424 appname emitted by the demonstration poller.
 - id: cato_events_route
   name: cato_events_route
   final: true
   disabled: false
   pipeline: cato_normalize
-  description: "Route Cato EventsFeed syslog records through normalization"
+  description: "UNSUPPORTED DEMO: Route Cato EventsFeed test records through normalization"
   enableOutputExpression: false
   filter: "__inputId.startsWith('syslog:') && appname === 'cato-events'"
   clones: []
