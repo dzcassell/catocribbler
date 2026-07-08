@@ -1,35 +1,45 @@
 # catocribbler
 
-Customer-ready guidance and reference assets for integrating **Cato Networks EventsFeed** logs with **Cribl Stream**.
+Tenant-neutral reference implementation for integrating **Cato Networks EventsFeed** logs with **Cribl Stream**.
 
-![Cato EventsFeed to Cribl Stream architecture](assets/cato_cribl_architecture.png)
+## Repository contents
 
-## Contents
+- [`poller/poller.py`](poller/poller.py) — marker-aware EventsFeed poller
+- [`poller/compose.yaml`](poller/compose.yaml) — container deployment with Docker secrets and persistent marker state
+- [`poller/.env.example`](poller/.env.example) — sanitized tenant configuration template
+- [`cribl/pipelines/cato_normalize/conf.yml`](cribl/pipelines/cato_normalize/conf.yml) — validated Cribl normalization Pipeline
+- [`cribl/routes/cato_events_route.yml`](cribl/routes/cato_events_route.yml) — tenant-neutral Route example
+- [`SECURITY.md`](SECURITY.md) — credential-handling guidance
 
-- [`docs/Cato_EventsFeed_to_Cribl_Stream_Customer_How-To.pdf`](docs/Cato_EventsFeed_to_Cribl_Stream_Customer_How-To.pdf) — print-ready customer implementation guide
-- [`docs/Cato_EventsFeed_to_Cribl_Stream_Customer_How-To.docx`](docs/Cato_EventsFeed_to_Cribl_Stream_Customer_How-To.docx) — editable source document
-- [`assets/cato_cribl_architecture.png`](assets/cato_cribl_architecture.png) — reference architecture diagram
+## Quick start
 
-## Scope
+1. Copy `poller/.env.example` to `poller/.env` and replace every placeholder.
+2. Store the Cato API key in `poller/secrets/cato_api_key` and the Cribl CA certificate in `poller/secrets/cribl_ca.pem`.
+3. Create a writable `poller/state/` directory owned by UID `10001`.
+4. Deploy the Cribl Syslog Source, `cato_normalize` Pipeline, Route, and a validation Destination.
+5. Start the poller with `docker compose up --build -d` from `poller/`.
+6. Validate marker advancement, Cribl field promotion, and destination delivery before production cutover.
 
-The guide covers:
+## What the poller does
 
-- Cato tenant preparation and service-key handling
-- EventsFeed polling and marker persistence
-- Syslog delivery to Cribl Stream
-- Cribl Source, Pipeline, Route, and filesystem-destination configuration
-- JSON normalization into top-level Cribl fields
-- Validation, troubleshooting, and production hardening
+- Authenticates to the customer-selected Cato API endpoint using a service API key read from a secret file.
+- Retrieves EventsFeed pages using the persistent marker returned by Cato.
+- Normalizes `fieldsMap` keys to snake case.
+- Emits RFC 5424 syslog records to Cribl over TCP or TLS.
+- Writes the next marker atomically only after the page is sent successfully.
+- Immediately drains full 3,000-record pages before returning to the normal polling interval.
 
 ## Security
 
-This repository intentionally contains no API keys, tenant account identifiers, private IP addresses, passwords, or customer-specific hostnames. Use placeholders and secret-management controls when adapting the examples.
+This repository intentionally contains no API keys, tenant account identifiers, private IP addresses, passwords, or customer-specific hostnames. Do not commit secrets or unsanitized event samples.
 
-Do not commit Cato API keys or other credentials. Store secrets in a vault, orchestrator secret, or protected local file with restrictive permissions.
+Store credentials in a vault, orchestrator secret, or protected local file with restrictive permissions. Rotate any credential that is exposed in source control, tickets, chat, or terminal transcripts.
 
-## Product documentation
+## Support boundary
 
-Validate implementation details against the current official Cato Networks and Cribl documentation before production deployment, since APIs and product interfaces evolve because apparently software dislikes remaining still.
+The poller is a tenant-neutral reference implementation and customer-managed code. Review, test, monitor, and maintain it under the customer's software-development and change-control standards.
+
+Validate implementation details against current official Cato Networks and Cribl documentation before production deployment, since software products continue evolving despite everyone's objections.
 
 ## Disclaimer
 
