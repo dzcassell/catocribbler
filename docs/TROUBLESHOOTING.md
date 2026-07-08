@@ -3,31 +3,16 @@
 > [!CAUTION]
 > **UNSUPPORTED, NON-PRODUCTION DEMONSTRATION ONLY.** This material is not a support service, supported runbook, official integration guide, or assurance that the code can be made safe or reliable. Damon Cassell, Cato Networks, Cribl, employers, contributors, vendors, partners, and all other parties provide no support, warranty, maintenance, incident response, or obligation to help. There is no license grant. Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 
-This guide covers both the interactive installer and an installed `cato-events-poller` deployment.
-
-The default installation directory is `/opt/cribbler`, but the installer allows another absolute path. Set the actual path before running installed-system commands:
+The default installation directory is `/opt/cribbler`, but the installer allows another absolute path.
 
 ```bash
 INSTALL_DIR=${INSTALL_DIR:-/opt/cribbler}
 POLLER_DIR="${INSTALL_DIR}/poller"
 ```
 
-## 1. Stop if this is production
+## 1. Troubleshooting order
 
-Do not continue if the Cato account, Cribl Worker Group, Source, Route, Pipeline, Destination, Docker host, or network is production.
-
-Use only:
-
-- An approved test account
-- An isolated non-production Cribl environment
-- A dedicated short-lived Cato key
-- Synthetic or specifically approved test data
-- An isolated test Destination
-- A documented cleanup and key-revocation plan
-
-## 2. Fast triage order
-
-Troubleshoot in this order:
+Use this sequence:
 
 1. Installer prerequisites and directory creation
 2. Cato endpoint, account ID, key, permissions, and source-IP restrictions
@@ -41,21 +26,29 @@ Troubleshoot in this order:
 10. Cribl Destination
 11. Continuous polling and marker state
 
-The first failing layer is the one to investigate. Regenerating an API key will not repair a Docker network, despite the universal human instinct to rotate credentials whenever networking becomes emotionally difficult.
+The first failing layer identifies where to investigate. Rotating credentials does not repair Docker networking, despite the ancient administrative ritual suggesting otherwise.
 
-## 3. Interactive installer failures
+## 2. Current defaults
+
+| Setting | Default |
+|---|---|
+| Cato GraphQL API URL | `https://api.catonetworks.com/api/v1/graphql` |
+| Cribl connection method | Published host TCP port |
+| Cribl Syslog port | `9514` |
+| Cribl TLS | Disabled |
+| Poll interval | 30 seconds |
+
+## 3. Installer failures
 
 ### `An interactive terminal is required`
 
-The installer needs readable and writable `/dev/tty` because it reads prompts there when the script is piped to Bash.
+The installer reads prompts from `/dev/tty` so it remains interactive through a pipe.
 
-Run it from an interactive SSH or console session:
+Run from an interactive SSH or console session:
 
 ```bash
 test -r /dev/tty && test -w /dev/tty && echo 'TTY PASS'
 ```
-
-Do not run it through a non-interactive scheduler, detached shell, or automation system without adapting the installer.
 
 ### `Run this installer as root`
 
@@ -65,15 +58,7 @@ Use:
 sudo bash /tmp/catocribbler-install.sh
 ```
 
-or:
-
-```bash
-curl -fsSL <pinned-installer-url> | sudo env CATOCRIBBLER_REF=<commit> bash
-```
-
-### Missing `git`, `docker`, or `python3`
-
-Verify:
+### Missing required commands
 
 ```bash
 git --version
@@ -82,23 +67,19 @@ docker compose version
 python3 --version
 ```
 
-The installer requires Docker Compose v2 through `docker compose`, not the retired standalone `docker-compose` command.
+Docker Compose v2 through `docker compose` is required.
 
 ### Installation directory already exists and is not empty
 
 The installer refuses to overwrite an existing installation.
 
-Inspect it:
-
 ```bash
 ls -la /opt/cribbler
 ```
 
-Choose another empty directory or remove the old demonstration after preserving any approved marker state and revoking its credentials.
+Choose another empty directory or remove the old demonstration only after preserving approved marker state and revoking old credentials.
 
 ### Installer stopped after cloning or building
-
-The partial installation remains in the selected directory for inspection.
 
 ```bash
 cd "${INSTALL_DIR}"
@@ -111,77 +92,63 @@ docker compose ps -a
 docker compose logs --tail=100 2>/dev/null || true
 ```
 
-Remove the partial installation only after collecting the necessary diagnostics and confirming no marker or credential must be preserved.
+## 4. Choosing the Cribl connection method
 
-## 4. Inspect the existing Cribl Docker environment
+### Option 1: Published host TCP port, recommended default
 
-```bash
-docker ps \
-  --filter 'name=cribl' \
-  --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-```
-
-For a selected test Worker or single-instance container:
-
-```bash
-CRIBL_CONTAINER=cribl-worker
-
-docker inspect "${CRIBL_CONTAINER}" \
-  --format 'Name={{.Name}}
-Image={{.Config.Image}}
-Networks={{json .NetworkSettings.Networks}}
-PublishedPorts={{json .NetworkSettings.Ports}}'
-
-docker port "${CRIBL_CONTAINER}"
-```
-
-Do not target a Leader management port unless that node intentionally processes test data.
-
-## 5. Docker connectivity models
-
-### Published host port
-
-Use the Docker host's LAN/test-network IP or DNS name when Cribl publishes the Syslog port:
+Use this when the Cribl container publishes the Syslog Source port to the Docker host:
 
 ```text
 0.0.0.0:9514->9514/tcp
 ```
 
-The poller settings should resemble:
+Configure the Docker host's LAN IP address or DNS name.
 
-```dotenv
-CRIBL_SYSLOG_HOST=192.0.2.25
-CRIBL_SYSLOG_PORT=9514
-```
+Advantages:
+
+- Simpler to troubleshoot
+- No shared Docker network membership
+- No dependence on local network names or aliases
+- More portable between customer environments
 
 Do not use `localhost` or `127.0.0.1`; inside the poller container those addresses refer to the poller itself.
 
-### Shared external Docker network
+Confirm the published port:
 
-The installer creates `poller/compose.override.yaml` when this option is selected.
+```bash
+docker ps \
+  --filter 'name=cribl' \
+  --format 'table {{.Names}}\t{{.Ports}}'
 
-Inspect it:
+ss -lnt | grep ':9514 '
+```
+
+### Option 2: Shared external Docker network, advanced fallback
+
+Use this when the Syslog TCP port is not published or direct container-to-container networking is required.
+
+The poller joins an existing Cribl Docker network and connects using a container, service, or network-alias name.
+
+Check networks:
+
+```bash
+docker network ls
+
+docker inspect cribl-worker \
+  --format '{{json .NetworkSettings.Networks}}'
+```
+
+Inspect the generated override:
 
 ```bash
 cat "${POLLER_DIR}/compose.override.yaml"
 ```
 
-Confirm the external network exists:
+This option gives the poller access to other services exposed on the selected network. Use only an isolated non-production network.
 
-```bash
-docker network inspect <cribl-test-network-name> >/dev/null
-```
+**Recommendation:** use option 1 unless the Cribl listener is not published or the deployment specifically requires option 2.
 
-Confirm the Cribl container is attached:
-
-```bash
-docker inspect cribl-worker \
-  --format '{{json .NetworkSettings.Networks}}'
-```
-
-The configured Cribl host must be a container name, service name, or network alias resolvable on that shared network.
-
-## 6. Verify installation files and permissions
+## 5. Verify installation files and permissions
 
 ```bash
 cd "${POLLER_DIR}"
@@ -197,6 +164,7 @@ done
 
 stat -c 'uid=%u gid=%g mode=%a size=%s path=%n' \
   .env \
+  secrets \
   secrets/cato_api_key \
   secrets/cribl_ca.pem \
   state
@@ -205,16 +173,22 @@ stat -c 'uid=%u gid=%g mode=%a size=%s path=%n' \
 Expected:
 
 - `.env`: mode `600`
-- API key file: UID/GID `10001`, mode `400`, non-empty
+- Secret directory: UID/GID `10001`, mode `700`
+- API key: UID/GID `10001`, mode `400`, non-empty
 - CA file: UID/GID `10001`, mode `400`
 - State directory: UID/GID `10001`, mode `700`
 
-Repair without printing secrets:
+Repair:
 
 ```bash
-chown 10001:10001 secrets/cato_api_key secrets/cribl_ca.pem state
+chown 10001:10001 \
+  secrets \
+  secrets/cato_api_key \
+  secrets/cribl_ca.pem \
+  state
+
+chmod 0700 secrets state
 chmod 0400 secrets/cato_api_key secrets/cribl_ca.pem
-chmod 0700 state
 chmod 0600 .env
 
 if test -e state/marker.txt; then
@@ -223,24 +197,24 @@ if test -e state/marker.txt; then
 fi
 ```
 
-Do not make the key world-readable to resolve a permissions problem.
+Do not make the key world-readable.
 
-## 7. Verify the Cato endpoint and account ID
+## 6. Verify the Cato endpoint and account ID
 
 ```bash
 cd "${POLLER_DIR}"
 grep -E '^(CATO_API_URL|CATO_ACCOUNT_ID)=' .env
 ```
 
-The API URL must use the endpoint assigned to the test tenant, for example:
+Expected default endpoint:
 
 ```text
-https://api.us1.catonetworks.com/api/v1/graphql2
+https://api.catonetworks.com/api/v1/graphql
 ```
 
-The account ID must be numeric, not the display name.
+The account ID must be numeric.
 
-Test DNS and TLS to the endpoint:
+Test DNS and TLS:
 
 ```bash
 CATO_HOST="$(sed -n 's#^CATO_API_URL=https://\([^/]*\)/.*#\1#p' .env)"
@@ -255,9 +229,9 @@ openssl s_client \
 
 Resolve DNS, routing, proxy, clock, certificate, or TLS-inspection problems before troubleshooting API permissions.
 
-## 8. Run the installed Cato preflight
+## 7. Run the installed Cato preflight
 
-This calls the installed poller code, fetches one EventsFeed page into memory, does not send it to Cribl, and does not update the marker.
+This fetches and decodes one EventsFeed page without sending records to Cribl or writing the marker.
 
 ```bash
 cd "${POLLER_DIR}"
@@ -303,7 +277,7 @@ Likely causes:
 
 - Incorrect, truncated, expired, exposed, or revoked key
 - Empty secret file
-- Extra characters copied with the key
+- Extra copied characters
 
 Check without displaying the key:
 
@@ -326,8 +300,7 @@ Likely causes:
 
 Likely causes:
 
-- Wrong regional hostname
-- Missing `/api/v1/graphql2`
+- Incorrect endpoint path
 - Proxy or security device rewriting the request
 
 ### HTTP 422
@@ -340,9 +313,9 @@ Likely causes:
 
 ### HTTP 429
 
-Stop duplicate pollers and reduce the polling frequency.
+Stop duplicate pollers and reduce polling frequency.
 
-## 9. Run the Cribl connection preflight
+## 8. Run the Cribl connection preflight
 
 ```bash
 cd "${POLLER_DIR}"
@@ -370,8 +343,8 @@ print(
 
 ### Name resolution failure
 
-- Shared-network model: the containers are not on the same network or the configured name is not an alias.
-- Published-port model: the Docker container cannot resolve the host DNS name.
+- Published-port model: the container cannot resolve the Docker host DNS name.
+- Shared-network model: the containers are not on the same network or the configured name is not a valid alias.
 
 ### Connection refused
 
@@ -379,41 +352,27 @@ print(
 - Wrong port.
 - Source listens on UDP only.
 - Docker does not publish the TCP port.
-- Listener is bound only to localhost inside Cribl.
+- Listener is bound incorrectly.
 
 ### Connection timeout
 
 - Firewall drop.
 - Wrong address.
-- Docker routing or network ACL issue.
+- Docker routing or network ACL problem.
 - Load balancer or VIP problem.
 
 ### TLS certificate error
 
 Check:
 
-- Cribl TLS is enabled on the selected port.
+- TLS is enabled on the selected Cribl Source port.
 - `CRIBL_SYSLOG_TLS=true`.
 - `CRIBL_SYSLOG_SERVER_NAME` matches a certificate SAN.
-- The copied CA chain is correct.
+- The CA chain is correct.
 - The certificate is current.
-- Cribl is not requiring a client certificate; the demonstration poller does not present one.
+- Cribl is not requiring a client certificate; the poller does not present one.
 
-## 10. Confirm the Cribl Syslog Source
-
-In the test Worker Group or single instance, verify:
-
-- Source type is Syslog.
-- Protocol is TCP or TCP with TLS.
-- Port matches the poller configuration.
-- Source is enabled.
-- Configuration is saved, committed, and deployed.
-- Listener is reachable from the poller.
-- Route and Destination are isolated for testing.
-
-## 11. Send a synthetic event
-
-Use the installed poller code so the event uses the same socket and RFC 5424 formatter as the real poller:
+## 9. Send a synthetic event
 
 ```bash
 cd "${POLLER_DIR}"
@@ -448,10 +407,9 @@ Confirm in Cribl:
 2. `appname` is `cato-events`.
 3. Route `cato_events_route` matches.
 4. Pipeline `cato_normalize` runs.
-5. `event_type` is `Catocribbler Installer Synthetic Test`.
-6. Isolated test Destination receives the event.
+5. The isolated test Destination receives the event.
 
-## 12. Route and Pipeline failures
+## 10. Route, Pipeline, and Destination failures
 
 The supplied Route filter is:
 
@@ -461,11 +419,11 @@ __inputId.startsWith('syslog:') && appname === 'cato-events'
 
 If the Source receives the event but the Route does not match, check:
 
-- `appname` value
+- `appname`
 - `__inputId`
 - Route order
 - Earlier final routes
-- Whether the correct Worker Group received the committed configuration
+- Correct Worker Group deployment
 
 If the Route matches but parsing fails, inspect:
 
@@ -474,19 +432,15 @@ cato_parse_error
 cribl_pipeline=cato_normalize_parse_failed
 ```
 
-Confirm that the syslog `message` field contains one complete JSON object.
-
 If the Pipeline succeeds but the Destination receives nothing, check:
 
 - Route output ID
 - Destination health and credentials
-- Backpressure and persistent queues
+- Backpressure and queues
 - Destination-side filters
 - Storage and license capacity
 
-## 13. Continuous polling and marker problems
-
-Start:
+## 11. Continuous polling and marker state
 
 ```bash
 cd "${POLLER_DIR}"
@@ -506,23 +460,16 @@ INFO Fetched=425 Sent=425 marker_len=180
 
 `Fetched=0 Sent=0` is a successful poll with no new events.
 
-Check marker metadata:
+Inspect marker metadata without displaying the value:
 
 ```bash
 ls -l state/marker.txt
 wc -c state/marker.txt
 ```
 
-If no marker is created:
+Do not create, edit, or copy a marker manually.
 
-- No page may have been successfully delivered.
-- State directory permissions may be wrong.
-- Cribl connection may fail during the page.
-- The API may return no new marker.
-
-Do not create, edit, or copy a marker value manually.
-
-## 14. Safe diagnostic collection
+## 12. Safe diagnostics
 
 ```bash
 cd "${POLLER_DIR}"
@@ -544,30 +491,16 @@ docker compose logs --tail=200 cato-events-poller
 printf '\n=== Permissions ===\n'
 stat -c 'uid=%u gid=%g mode=%a size=%s path=%n' \
   .env \
+  secrets \
   secrets/cato_api_key \
   secrets/cribl_ca.pem \
   state \
   state/marker.txt 2>/dev/null || true
-
-printf '\n=== Cribl containers ===\n'
-docker ps \
-  --filter 'name=cribl' \
-  --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
 ```
 
-Redact before sharing:
+Redact account IDs, internal addresses, event payloads, marker values, certificates, and API keys before sharing.
 
-- Account IDs
-- Internal hostnames and addresses
-- Event payloads
-- API response bodies containing tenant context
-- Marker values
-- Certificates
-- API keys
-
-There is no official support recipient for these diagnostics.
-
-## 15. Remove a failed demonstration
+## 13. Remove a failed demonstration
 
 ```bash
 cd "${POLLER_DIR}"
@@ -578,4 +511,4 @@ Then revoke the Cato key, remove the demonstration service principal when approp
 
 ## No support, license, warranty, or liability
 
-No person or organization is obligated to troubleshoot this code. Cato Networks and Cribl support organizations are not responsible for it. The repository contains no license grant from the author. All material is provided “AS IS” and “AS AVAILABLE.” Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
+No person or organization is obligated to troubleshoot this code. Cato Networks and Cribl support organizations are not responsible for it. All material is provided “AS IS” and “AS AVAILABLE.” Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
